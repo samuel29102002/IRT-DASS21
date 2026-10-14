@@ -1,0 +1,162 @@
+---
+title: "Step 8 — Polytomous IRT on the original four-category data"
+subtitle: "DASS-21 psychometric analysis (IRT final essay, SoSe 2026)"
+date: "`r format(Sys.time(), '%Y-%m-%d %H:%M')`"
+output:
+  html_document:
+    toc: true
+    keep_md: true
+---
+
+```{r opts, include = FALSE}
+knitr::opts_chunk$set(comment = "", message = FALSE, warning = TRUE)
+```
+
+
+```{r setup, include = FALSE}
+setup_file <- c("R/00_setup.R", "../R/00_setup.R")
+source(setup_file[file.exists(setup_file)][1])
+knitr::opts_knit$set(root.dir = PROJ)
+```
+
+```{r load}
+log_open("08")
+P   <- readRDS(file.path(RES, "prepared.rds"))
+IRT <- readRDS(file.path(RES, "irt_binary.rds"))
+X <- as.data.frame(P$items)
+GRID <- seq(-4, 4, by = 0.05)
+```
+
+**Models.** The graded response model (Samejima) is the main model: a
+difference model whose cumulative boundary curves are 2PL functions, and in its
+normal-ogive form identical to the polychoric factor model of Step 5. Divide-by-total
+alternatives (PCM, GPCM) and a GRM with one common slope are fitted for comparison.
+Note: in the GRM the category boundaries are ordered *by construction*
+(b₁ < b₂ < b₃ is required for non-negative category probabilities), so threshold
+ordering can only be examined meaningfully in the PCM/GPCM (section 3).
+
+# 1. Model comparison
+
+```{r models}
+grm  <- mirt::mirt(X, 1, itemtype = "graded", SE = TRUE, verbose = FALSE)
+sv   <- mirt::mirt(X, 1, itemtype = "graded", pars = "values")
+grm1 <- mirt::mirt(X, 1, itemtype = "graded", verbose = FALSE,
+                   constrain = list(sv$parnum[sv$name == "a1"]))      # common slope
+gpcm <- mirt::mirt(X, 1, itemtype = "gpcm",  SE = TRUE, verbose = FALSE)
+pcm  <- mirt::mirt(X, 1, itemtype = "Rasch", SE = TRUE, verbose = FALSE)
+mods <- list(GRM = grm, GRM_common_a = grm1, GPCM = gpcm, PCM = pcm)
+comp <- data.frame(model = names(mods),
+  npar = sapply(mods, mirt::extract.mirt, "nest"),
+  logLik = sapply(mods, mirt::extract.mirt, "logLik"),
+  AIC = sapply(mods, mirt::extract.mirt, "AIC"),
+  BIC = sapply(mods, mirt::extract.mirt, "BIC"), row.names = NULL)
+format(comp, digits = 7)
+anova(grm1, grm)
+anova(pcm, gpcm)
+```
+
+# 2. GRM parameters
+
+```{r params}
+cf <- mirt::coef(grm, IRTpars = TRUE, printSE = TRUE)
+par_tab <- data.frame(item = 1:21, sub = substr(SUBSCALE_OF[ITEMS], 1, 1),
+  a  = sapply(cf[ITEMS], function(z) z["par", "a"]),
+  se_a = sapply(cf[ITEMS], function(z) z["SE", "a"]),
+  b1 = sapply(cf[ITEMS], function(z) z["par", "b1"]),
+  b2 = sapply(cf[ITEMS], function(z) z["par", "b2"]),
+  b3 = sapply(cf[ITEMS], function(z) z["par", "b3"]), row.names = NULL)
+par_tab$spread <- par_tab$b3 - par_tab$b1
+par_tab$info_max <- sapply(1:21, function(j) max(mirt::iteminfo(mirt::extract.item(grm, j), GRID)))
+par_tab$theta_info_max <- sapply(1:21, function(j) GRID[which.max(mirt::iteminfo(mirt::extract.item(grm, j), GRID))])
+format(par_tab, digits = 3)
+
+```
+
+# 3. Category functioning
+
+**(a)** For each item and each model: is every category the most probable response
+somewhere on the latent continuum? **(b)** Disordered step parameters in the
+divide-by-total models (the "disordered threshold" question of lecture 10).
+
+```{r categories}
+modal <- function(m) t(sapply(1:21, function(j) {
+  pr <- mirt::probtrace(mirt::extract.item(m, j), GRID)
+  tabulate(apply(pr, 1, which.max), nbins = 4) > 0
+}))
+mod_grm <- modal(grm); mod_gpcm <- modal(gpcm); mod_pcm <- modal(pcm)
+cat("Items with at least one never-modal category: GRM =",
+    paste(which(rowSums(!mod_grm) > 0), collapse = ","), "| GPCM =",
+    paste(which(rowSums(!mod_gpcm) > 0), collapse = ","), "| PCM =",
+    paste(which(rowSums(!mod_pcm) > 0), collapse = ","), "\n")
+
+steps <- function(m) t(sapply(mirt::coef(m, IRTpars = TRUE)[ITEMS],
+                              function(z) z[1, grep("^b", colnames(z))]))
+st_gpcm <- steps(gpcm); st_pcm <- steps(pcm)
+dis_gpcm <- which(apply(st_gpcm, 1, function(x) any(diff(x) <= 0)))
+dis_pcm  <- which(apply(st_pcm,  1, function(x) any(diff(x) <= 0)))
+cat("Disordered step parameters: GPCM items =", paste(dis_gpcm, collapse = ","),
+    "| PCM items =", paste(dis_pcm, collapse = ","), "\n")
+round(cbind(st_pcm, st_gpcm), 3)
+```
+
+# 4. Information and precision: GRM versus the dichotomised 2PL
+
+```{r info}
+info_grm <- mirt::testinfo(grm, GRID)
+fs <- mirt::fscores(grm, method = "EAP", full.scores.SE = TRUE)
+th <- fs[, 1]; se <- fs[, 2]
+mrel <- 1 - mean(se^2) / (var(th) + mean(se^2))
+area <- function(y) sum(diff(GRID) * (head(y, -1) + tail(y, -1)) / 2)
+info_tab <- data.frame(
+  model = c("GRM (4 categories)", "2PL rule A", "2PL rule B"),
+  max_info = c(max(info_grm), max(IRT$A$info2), max(IRT$B$info2)),
+  theta_at_max = c(GRID[which.max(info_grm)], GRID[which.max(IRT$A$info2)], GRID[which.max(IRT$B$info2)]),
+  area = c(area(info_grm), area(IRT$A$info2), area(IRT$B$info2)),
+  rel80_from = c(min(GRID[info_grm >= 5]), min(GRID[IRT$A$info2 >= 5]), min(GRID[IRT$B$info2 >= 5])),
+  rel80_to   = c(max(GRID[info_grm >= 5]), max(GRID[IRT$A$info2 >= 5]), max(GRID[IRT$B$info2 >= 5])),
+  marginal_rel = c(mrel, IRT$A$marg_rel, IRT$B$marg_rel),
+  marginal_rxx = c(mirt::marginal_rxx(grm), IRT$A$marg_rel_mirt, IRT$B$marg_rel_mirt))
+format(info_tab, digits = 4)
+ratio <- info_tab$area[1] / info_tab$area[2:3]
+cat("Area ratio GRM / 2PL: A =", round(ratio[1], 3), "| B =", round(ratio[2], 3), "\n")
+cat("Mean SE(theta): GRM =", round(mean(se), 3), "| 2PL A =", round(mean(IRT$A$se_theta), 3),
+    "| 2PL B =", round(mean(IRT$B$se_theta), 3), "\n")
+cat("NOTE: each theta is standardised N(0,1) within its own model; the areas compare\n",
+    "      precision per unit of the standardised trait, not the same latent variable.\n")
+```
+
+```{r scores}
+cors <- c(GRM_vs_2PL_A = cor(th, IRT$A$theta), GRM_vs_2PL_B = cor(th, IRT$B$theta),
+          GRM_vs_sum = cor(th, rowSums(X)))
+round(cors, 4)
+```
+
+# 5. Model fit of the GRM
+
+```{r fit}
+m2 <- tryCatch(mirt::M2(grm, type = "C2"), error = function(e) conditionMessage(e)); m2
+itf <- tryCatch(mirt::itemfit(grm, fit_stats = "S_X2"), error = function(e) NULL)
+if (!is.null(itf)) { itf$p_bh <- p.adjust(itf$p.S_X2, "BH"); print(format(itf, digits = 3)) }
+```
+
+# 6. Numbers for the essay and save
+
+```{r numbers}
+num("GRMAMin", f2(min(par_tab$a))); num("GRMAMax", f2(max(par_tab$a)))
+num("GRMMaxInfo", f2(max(info_grm))); num("GRMMaxInfoTheta", f2(GRID[which.max(info_grm)]))
+num("GRMRelRange", sprintf("[%.1f, %.1f]", min(GRID[info_grm >= 5]), max(GRID[info_grm >= 5])))
+num("GRMMargRel", dec(mrel, 3))
+num("InfoRatioA", f2(ratio[1])); num("InfoRatioB", f2(ratio[2]))
+num("GRMLRT", formatC(2 * (comp$logLik[1] - comp$logLik[2]), format = "f", digits = 1))
+num("GRMThetaSum", dec(cors[[3]], 3)); num("GRMThetaCorrA", dec(cors[[1]], 3)); num("GRMThetaCorrB", dec(cors[[2]], 3))
+num("SEratioBGRM", f2(mean(IRT$B$se_theta) / mean(se)))
+num("DisorderedGPCM", length(dis_gpcm)); num("DisorderedPCM", length(dis_pcm))
+if (is.data.frame(m2)) { num("GRMMtwoRMSEA", dec(m2$RMSEA, 3)); num("GRMMtwoCFI", dec(m2$CFI, 3)) }
+saveRDS(list(grm = grm, comp = comp, par = par_tab, steps = list(gpcm = st_gpcm, pcm = st_pcm),
+             disordered = list(gpcm = dis_gpcm, pcm = dis_pcm),
+             modal = list(grm = mod_grm, gpcm = mod_gpcm, pcm = mod_pcm),
+             info = info_grm, grid = GRID, info_tab = info_tab, theta = th, se = se,
+             mrel = mrel, cors = cors, M2 = m2, itemfit = itf),
+        file.path(RES, "grm.rds"))
+log_close()
+```

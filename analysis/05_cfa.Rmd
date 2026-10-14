@@ -1,0 +1,164 @@
+---
+title: "Step 5 — Confirmatory factor analysis on the original four-category data"
+subtitle: "DASS-21 psychometric analysis (IRT final essay, SoSe 2026)"
+date: "`r format(Sys.time(), '%Y-%m-%d %H:%M')`"
+output:
+  html_document:
+    toc: true
+    keep_md: true
+---
+
+```{r opts, include = FALSE}
+knitr::opts_chunk$set(comment = "", message = FALSE, warning = TRUE)
+```
+
+```{r setup, include = FALSE}
+setup_file <- c("R/00_setup.R", "../R/00_setup.R")
+source(setup_file[file.exists(setup_file)][1])
+knitr::opts_knit$set(root.dir = PROJ)
+```
+
+```{r load}
+log_open("05")
+P <- readRDS(file.path(RES, "prepared.rds"))
+X <- P$items
+```
+
+All models: items declared `ordered`, WLSMV (DWLS on polychoric correlations,
+mean- and variance-adjusted test), delta parameterisation, latent variances fixed
+to 1 (`std.lv = TRUE`).
+
+```{r models}
+mk <- function(ii) paste0("dass", ii, collapse = " + ")
+mod <- list(
+  M1 = paste0("G =~ ", paste(ITEMS, collapse = " + ")),
+  M2 = paste(paste0("DEP =~ ", mk(DEP)), paste0("ANX =~ ", mk(ANX)),
+             paste0("STR =~ ", mk(STR)), sep = "\n"))
+mod$M3 <- paste(mod$M2, "G =~ DEP + ANX + STR", sep = "\n")       # second order
+mod$M4 <- paste(mod$M1, paste0("DEP =~ ", mk(DEP)), paste0("ANX =~ ", mk(ANX)),
+                paste0("STR =~ ", mk(STR)), sep = "\n")             # bifactor
+
+fit_ord <- function(m, orthogonal = FALSE)
+  lavaan::cfa(m, data = X, ordered = ITEMS, std.lv = TRUE, estimator = "WLSMV",
+              parameterization = "delta", orthogonal = orthogonal)
+fits <- list(M1 = fit_ord(mod$M1), M2 = fit_ord(mod$M2), M3 = fit_ord(mod$M3),
+             M4 = fit_ord(mod$M4, orthogonal = TRUE))
+sapply(fits, function(f) c(converged = lavaan::lavInspect(f, "converged"),
+                           admissible = suppressWarnings(lavaan::lavInspect(f, "post.check"))))
+```
+
+# 1. Fit
+
+`*.scaled` = indices from the scaled-and-shifted test statistic (used in the essay);
+`*.robust` = lavaan's robust CFI/TLI/RMSEA for categorical
+data. Both are reported; the essay should state which one it uses.
+
+```{r fit}
+fm_names <- c("npar", "chisq", "chisq.scaled", "df.scaled", "pvalue.scaled",
+              "cfi.scaled", "tli.scaled", "rmsea.scaled", "rmsea.ci.lower.scaled",
+              "rmsea.ci.upper.scaled", "cfi.robust", "tli.robust", "rmsea.robust", "srmr")
+fit_tab <- t(sapply(fits, function(f) {
+  v <- lavaan::fitMeasures(f); setNames(v[fm_names], fm_names) }))
+round(fit_tab, 4)
+
+```
+
+## Nested model comparisons (scaled difference tests)
+
+```{r lrt}
+lavaan::lavTestLRT(fits$M1, fits$M2)
+lavaan::lavTestLRT(fits$M2, fits$M4)
+cat("Delta CFI (scaled): M1->M2", round(fit_tab["M2", "cfi.scaled"] - fit_tab["M1", "cfi.scaled"], 4),
+    "| M2->M4", round(fit_tab["M4", "cfi.scaled"] - fit_tab["M2", "cfi.scaled"], 4), "\n")
+```
+
+# 2. Parameters
+
+```{r loadings}
+std <- lapply(fits, lavaan::standardizedSolution)
+L1 <- with(std$M1, est.std[op == "=~"])
+L2 <- with(std$M2, setNames(est.std[op == "=~"], rhs[op == "=~"]))[ITEMS]
+phi <- with(std$M2, est.std[op == "~~" & lhs != rhs & lhs %in% c("DEP", "ANX", "STR")])
+names(phi) <- with(std$M2, paste(lhs, rhs, sep = "-")[op == "~~" & lhs != rhs & lhs %in% c("DEP", "ANX", "STR")])
+so <- with(std$M3, setNames(est.std[op == "=~" & lhs == "G"], rhs[op == "=~" & lhs == "G"]))
+Lg <- with(std$M4, setNames(est.std[op == "=~" & lhs == "G"], rhs[op == "=~" & lhs == "G"]))[ITEMS]
+Ls <- with(std$M4, setNames(est.std[op == "=~" & lhs != "G"], rhs[op == "=~" & lhs != "G"]))[ITEMS]
+load_tab <- data.frame(item = 1:21, sub = substr(SUBSCALE_OF[ITEMS], 1, 1),
+                       M1 = L1, M2 = L2, M4_general = Lg, M4_specific = Ls,
+                       M4_h2 = Lg^2 + Ls^2, row.names = NULL)
+format(load_tab, digits = 3)
+round(phi, 4); cat("Second-order loadings (M3):\n"); round(so, 4)
+cat("Second-order loadings implied by M2 correlations:",
+    round(sqrt(c(DEP = phi[["DEP-ANX"]] * phi[["DEP-STR"]] / phi[["ANX-STR"]],
+                 ANX = phi[["DEP-ANX"]] * phi[["ANX-STR"]] / phi[["DEP-STR"]],
+                 STR = phi[["DEP-STR"]] * phi[["ANX-STR"]] / phi[["DEP-ANX"]])), 4), "\n")
+cat("Heywood cases (h2 > 1) in M4:", sum(load_tab$M4_h2 > 1), "\n")
+
+```
+
+# 3. Local dependence: residual polychoric correlations
+
+```{r residuals}
+top_res <- function(f, k = 10) {
+  M <- lavaan::residuals(f, type = "cor")$cov
+  M[lower.tri(M, diag = TRUE)] <- NA
+  o <- order(abs(M), decreasing = TRUE, na.last = NA)[1:k]
+  data.frame(i = rownames(M)[row(M)[o]], j = colnames(M)[col(M)[o]], resid = round(M[o], 3))
+}
+res <- lapply(fits, function(f) lavaan::residuals(f, type = "cor")$cov)
+cat("Largest absolute residual correlation:",
+    round(sapply(res, function(M) max(abs(M[upper.tri(M)]))), 3), "\n")
+top_res(fits$M1); top_res(fits$M4)
+```
+
+# 4. From factor loadings to IRT parameters
+
+Delta parameterisation: $a^{probit}_i = \lambda_i/\sqrt{1-\lambda_i^2}$,
+$b_{ic} = \tau_{ic}/\lambda_i$; ×1.702 gives the logistic metric (lecture 6).
+
+```{r ifa-irt}
+tau <- lavaan::lavInspect(fits$M1, "est")$tau
+ifa <- data.frame(item = 1:21, lambda = L1, a_logit = 1.702 * L1 / sqrt(1 - L1^2),
+                  b1 = tau[paste0(ITEMS, "|t1"), 1] / L1,
+                  b2 = tau[paste0(ITEMS, "|t2"), 1] / L1,
+                  b3 = tau[paste0(ITEMS, "|t3"), 1] / L1)
+format(ifa, digits = 3)
+irt <- if (file.exists(file.path(RES, "irt_binary.rds"))) readRDS(file.path(RES, "irt_binary.rds")) else NULL
+if (!is.null(irt)) {
+  r_ifa <- cor(ifa$a_logit, irt$A$a)
+  cat("cor(a from CFA, a from binary 2PL rule A) =", round(r_ifa, 3), "\n")
+}
+```
+
+# 5. Numbers for the essay and save
+
+```{r numbers}
+tags <- c(M1 = "One", M2 = "Three", M3 = "SecondOrder", M4 = "Bi")
+for (m in names(tags)) {
+  num(paste0("Chisq", tags[m]), formatC(fit_tab[m, "chisq.scaled"], format = "f", digits = 1))
+  num(paste0("df", tags[m]), fit_tab[m, "df.scaled"])
+  num(paste0("CFI", tags[m]), dec(fit_tab[m, "cfi.scaled"], 3))
+  num(paste0("TLI", tags[m]), dec(fit_tab[m, "tli.scaled"], 3))
+  num(paste0("RMSEA", tags[m]), dec(fit_tab[m, "rmsea.scaled"], 3))
+  num(paste0("SRMR", tags[m]), dec(fit_tab[m, "srmr"], 3))
+  num(paste0("CFIrob", tags[m]), dec(fit_tab[m, "cfi.robust"], 3))
+  num(paste0("RMSEArob", tags[m]), dec(fit_tab[m, "rmsea.robust"], 3))
+}
+num("PhiDA", dec(phi[["DEP-ANX"]])); num("PhiDS", dec(phi[["DEP-STR"]])); num("PhiAS", dec(phi[["ANX-STR"]]))
+num("LoadMin", dec(min(L1))); num("LoadMax", dec(max(L1)))
+num("GenLoadMin", dec(min(Lg))); num("GenLoadMax", dec(max(Lg)))
+num("SpecLoadMin", dec(min(Ls))); num("SpecLoadMax", dec(max(Ls)))
+num("SecondOrderDep", dec(so[["DEP"]])); num("SecondOrderAnx", dec(so[["ANX"]]))
+num("SecondOrderStr", dec(so[["STR"]]))
+num("SpecLoadItemFour", dec(Ls[4]));   num("SpecLoadItemFive", dec(Ls[5]))
+num("SpecLoadItemTen", dec(Ls[10]));   num("SpecLoadItemFourteen", dec(Ls[14]))
+num("SpecLoadItemTwentyone", dec(Ls[21]))
+num("ResidMaxOne", dec(max(abs(res$M1[upper.tri(res$M1)]))))
+num("ResidMaxBi",  dec(max(abs(res$M4[upper.tri(res$M4)]))))
+if (!is.null(irt)) num("CorrIFAIRT", dec(r_ifa))
+saveRDS(list(fits = fits, fit_tab = fit_tab, loadings = load_tab, phi = phi,
+             second_order = so, residuals = res, ifa_irt = ifa,
+             polychoric = lavaan::lavInspect(fits$M1, "sampstat")$cov),
+        file.path(RES, "cfa.rds"))
+log_close()
+```

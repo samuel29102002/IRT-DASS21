@@ -1,0 +1,232 @@
+---
+title: "Step 7 — Measurement invariance (gender; bonus: age)"
+subtitle: "DASS-21 psychometric analysis (IRT final essay, SoSe 2026)"
+date: "`r format(Sys.time(), '%Y-%m-%d %H:%M')`"
+output:
+  html_document:
+    toc: true
+    keep_md: true
+---
+
+```{r opts, include = FALSE}
+knitr::opts_chunk$set(comment = "", message = FALSE, warning = TRUE)
+```
+
+
+```{r setup, include = FALSE}
+setup_file <- c("R/00_setup.R", "../R/00_setup.R")
+source(setup_file[file.exists(setup_file)][1])
+knitr::opts_knit$set(root.dir = PROJ)
+```
+
+```{r load}
+log_open("07")
+P <- readRDS(file.path(RES, "prepared.rds"))
+MODELS <- list(corr3  = list(DEP = DEP, ANX = ANX, STR = STR),
+               unidim = list(G = 1:21))
+```
+
+**Sequence** (lecture 9, "typical steps"): configural → metric (equal loadings)
+→ scalar (equal loadings and thresholds) → strict (additionally equal residual
+variances). WLSMV on the four-category data.
+
+* Configural, metric and scalar are fitted in the **delta** parameterisation.
+  The identification constraints are written out explicitly in the model syntax
+  (function `mg_syntax`) rather than left to lavaan's defaults:
+  group 1 always has latent means 0, latent variances 1 and scale factors 1;
+  with equal loadings the latent variances of group 2 are freed; with equal
+  thresholds the latent means and the scale factors of group 2 are freed.
+  (Items whose thresholds are released in the partial model keep their scale
+  factor fixed at 1, as it is not identified otherwise.)
+* Residual variances are not parameters in the delta parameterisation, so the
+  strict step is fitted in the **theta** parameterisation. The scalar model is
+  refitted in theta to confirm that both parameterisations give the identical
+  scalar fit, so the strict step is compared against exactly the same model.
+* Decisions: ΔCFI ≥ −.010 and ΔRMSEA ≤ .015; for unequal group sizes the stricter
+  −.005 / .010 (Chen, 2007). Scaled χ² difference tests are reported alongside.
+  Lecture 9 recommends comparing the scalar model **directly with the configural
+  model** for threshold models; that comparison is reported as well.
+* Two families of approximate fit indices are reported: `*.scaled` (from the
+  scaled-and-shifted statistic) and `*.robust` (lavaan's robust versions for
+  categorical data). They answer the same question but can differ noticeably for
+  WLSMV; the essay must use one family consistently.
+
+```{r mi-function}
+# Multi-group syntax with explicit identification.
+#   level: "configural", "metric", "scalar" or "strict"
+#   param: "delta" or "theta";  free_thr: items whose thresholds differ by group
+mg_syntax <- function(factors, level, param = "delta", free_thr = character(0)) {
+  eqL <- level != "configural"
+  eqT <- level %in% c("scalar", "strict")
+  L <- character(0)
+  for (f in names(factors)) {
+    its <- paste0("dass", factors[[f]])
+    lab <- if (eqL) sprintf("c(l_%s, l_%s)*%s", its, its, its)
+           else     sprintf("c(l_%s_g1, l_%s_g2)*%s", its, its, its)
+    L <- c(L, paste0(f, " =~ ", paste(lab, collapse = " + ")),
+           sprintf("%s ~~ c(1, %s)*%s", f, if (eqL) "NA" else "1", f),
+           sprintf("%s ~ c(0, %s)*1",   f, if (eqT) "NA" else "0"))
+  }
+  for (it in ITEMS) {
+    same <- eqT && !(it %in% free_thr)
+    th <- sapply(1:3, function(k) if (same) sprintf("c(t_%s_%d, t_%s_%d)*t%d", it, k, it, k, k)
+                                  else      sprintf("c(t_%s_%d_g1, t_%s_%d_g2)*t%d", it, k, it, k, k))
+    L <- c(L, paste0(it, " | ", paste(th, collapse = " + ")))
+    if (param == "delta")
+      L <- c(L, sprintf("%s ~*~ c(1, %s)*%s", it, if (same) "NA" else "1", it))
+    else
+      L <- c(L, sprintf("%s ~~ c(1, %s)*%s", it, if (same && level != "strict") "NA" else "1", it))
+  }
+  paste(L, collapse = "\n")
+}
+fit_mg <- function(factors, d, level, param = "delta", free_thr = character(0))
+  lavaan::cfa(mg_syntax(factors, level, param, free_thr), data = d, group = "grp",
+              group.label = levels(d$grp), ordered = ITEMS, estimator = "WLSMV",
+              parameterization = param, std.lv = FALSE, auto.fix.first = FALSE)
+
+FM <- c("chisq", "chisq.scaled", "df.scaled", "pvalue.scaled", "cfi.scaled",
+        "rmsea.scaled", "cfi.robust", "rmsea.robust", "srmr")
+fmeas <- function(f) setNames(lavaan::fitMeasures(f)[FM], FM)
+
+mi_sequence <- function(model, grp, label) {
+  keep <- !is.na(grp)
+  d <- data.frame(P$items[keep, ], grp = droplevels(grp[keep]))
+  cat(sprintf("\n=== %s: %s ===\n", label, paste(names(table(d$grp)), table(d$grp), collapse = " / ")))
+  f <- list(
+    configural   = fit_mg(model, d, "configural"),
+    metric       = fit_mg(model, d, "metric"),
+    scalar       = fit_mg(model, d, "scalar"),
+    scalar_theta = fit_mg(model, d, "scalar", "theta"),
+    strict       = fit_mg(model, d, "strict", "theta"))
+  cat("df configural / metric / scalar / strict:",
+      sapply(f[c("configural", "metric", "scalar", "strict")], lavaan::fitMeasures, "df"), "\n")
+  tab <- as.data.frame(t(sapply(f, fmeas)))
+  tab$converged <- sapply(f, lavaan::lavInspect, "converged")
+  print(round(tab, 4))
+  cat("Scalar fit identical in delta and theta parameterisation:",
+      isTRUE(abs(tab["scalar", "chisq.scaled"] - tab["scalar_theta", "chisq.scaled"]) < 1e-3), "\n")
+  cat("Unscaled chi2 monotone across steps:",
+      all(diff(tab[c("configural", "metric", "scalar", "strict"), "chisq"]) > 0), "\n")
+
+  comp <- function(a, b) {
+    lrt <- lavaan::lavTestLRT(f[[a]], f[[b]])
+    data.frame(comparison = paste(a, "->", b),
+               dchisq = lrt[2, "Chisq diff"], ddf = lrt[2, "Df diff"], p = lrt[2, "Pr(>Chisq)"],
+               dCFI_scaled = tab[b, "cfi.scaled"] - tab[a, "cfi.scaled"],
+               dRMSEA_scaled = tab[b, "rmsea.scaled"] - tab[a, "rmsea.scaled"],
+               dCFI_robust = tab[b, "cfi.robust"] - tab[a, "cfi.robust"],
+               dRMSEA_robust = tab[b, "rmsea.robust"] - tab[a, "rmsea.robust"])
+  }
+  deltas <- rbind(comp("configural", "metric"), comp("metric", "scalar"),
+                  comp("scalar_theta", "strict"), comp("configural", "scalar"))
+  print(format(deltas, digits = 3))
+
+  pe <- lavaan::parameterEstimates(f$scalar)
+  lv <- unique(pe$lhs[pe$op == "=~"])
+  lat <- data.frame(factor = lv,
+    mean_g2 = sapply(lv, function(v) pe$est[pe$op == "~1" & pe$lhs == v & pe$group == 2]),
+    se      = sapply(lv, function(v) pe$se[pe$op == "~1" & pe$lhs == v & pe$group == 2]),
+    var_g2  = sapply(lv, function(v) pe$est[pe$op == "~~" & pe$lhs == v & pe$rhs == v & pe$group == 2]))
+  lat$z <- lat$mean_g2 / lat$se; lat$p <- 2 * pnorm(-abs(lat$z)); lat$sd_ratio <- sqrt(lat$var_g2)
+  cat("\nLatent means of group 2 (group 1 = 0, SD 1), scalar model:\n"); print(format(lat, digits = 3))
+  list(fits = f, tab = tab, deltas = deltas, latent = lat, data = d)
+}
+```
+
+# 1. Gender
+
+```{r gender}
+mi_g3 <- mi_sequence(MODELS$corr3,  P$gender, "gender, correlated three-factor")
+mi_g1 <- mi_sequence(MODELS$unidim, P$gender, "gender, unidimensional")
+```
+
+## Partial invariance: which items' thresholds drive the scalar misfit?
+
+Each item's three thresholds are released in turn from the scalar model
+(correlated three-factor, gender) and compared with the full scalar model.
+
+```{r partial}
+d <- mi_g3$data; f_sc <- mi_g3$fits$scalar
+part <- do.call(rbind, lapply(ITEMS, function(it) {
+  fp <- fit_mg(MODELS$corr3, d, "scalar", free_thr = it)
+  lrt <- lavaan::lavTestLRT(fp, f_sc)
+  data.frame(item = it, dchisq = lrt[2, "Chisq diff"], ddf = lrt[2, "Df diff"], p = lrt[2, "Pr(>Chisq)"])
+}))
+part$p_bh <- p.adjust(part$p, "BH")
+part <- part[order(-part$dchisq), ]
+print(format(part, digits = 3), row.names = FALSE)
+top4 <- part$item[1:4]
+fp4 <- fit_mg(MODELS$corr3, d, "scalar", free_thr = top4)
+cat("\nPartial scalar model freeing", paste(top4, collapse = ", "), ":\n")
+print(round(fmeas(fp4), 4)); print(lavaan::lavTestLRT(fp4, f_sc))
+pe4 <- lavaan::parameterEstimates(fp4)
+lat4 <- sapply(c("DEP", "ANX", "STR"), function(v) pe4$est[pe4$op == "~1" & pe4$lhs == v & pe4$group == 2])
+cat("Latent means of group 2, partial model:", round(lat4, 3),
+    "| full scalar:", round(mi_g3$latent$mean_g2, 3), "\n")
+```
+
+## Observed sum scores versus latent means
+
+Scalar invariance licenses comparing **latent** means. Whether **observed** sum
+scores are comparable also depends on whether the residual threshold differences
+cancel or accumulate. A direct check: the standardised group difference on the
+observed sum scores next to the latent mean difference.
+
+```{r sum-vs-latent}
+obs_d <- sapply(names(SCALES), function(s) {
+  x <- P$sums[[s]]; g <- P$gender
+  (mean(x[g == "Group 2"]) - mean(x[g == "Group 1"])) /
+    sqrt((var(x[g == "Group 1"]) + var(x[g == "Group 2"])) / 2)
+})
+data.frame(scale = names(SCALES), observed_d = round(obs_d, 3),
+           latent_mean_scalar = round(mi_g3$latent$mean_g2, 3),
+           latent_mean_partial = round(lat4, 3), row.names = NULL)
+```
+
+# 2. Bonus: age (median split, exploratory)
+
+```{r age}
+mi_a3 <- mi_sequence(MODELS$corr3,  P$age_grp, "age, correlated three-factor")
+mi_a1 <- mi_sequence(MODELS$unidim, P$age_grp, "age, unidimensional")
+```
+
+# 3. Numbers for the essay and save
+
+```{r numbers}
+store <- function(mi, pre) {
+  tb <- mi$tab; dl <- mi$deltas
+  for (s in c("configural", "metric", "scalar", "strict")) {
+    S <- tools::toTitleCase(s)
+    num(paste0(pre, S, "Chi"), formatC(tb[s, "chisq.scaled"], format = "f", digits = 1))
+    num(paste0(pre, S, "df"),  tb[s, "df.scaled"])
+    num(paste0(pre, S, "CFI"), dec(tb[s, "cfi.scaled"], 3))
+    num(paste0(pre, S, "RMSEA"), dec(tb[s, "rmsea.scaled"], 3))
+    num(paste0(pre, S, "CFIrob"), dec(tb[s, "cfi.robust"], 3))
+    num(paste0(pre, S, "RMSEArob"), dec(tb[s, "rmsea.robust"], 3))
+  }
+  rows <- c(Metric = 1, Scalar = 2, Strict = 3, ConfScalar = 4)
+  sg <- function(x) sub("^([+-])0\\.", "\\1.", sprintf("%+.3f", x))
+  for (k in names(rows)) {
+    r <- dl[rows[k], ]
+    num(paste0(pre, k, "dChi"), formatC(r$dchisq, format = "f", digits = 1))
+    num(paste0(pre, k, "ddf"), r$ddf)
+    num(paste0(pre, k, "dp"), if (r$p < .001) "<.001" else dec(r$p, 3))
+    num(paste0(pre, k, "dCFI"), sg(r$dCFI_scaled)); num(paste0(pre, k, "dRMSEA"), sg(r$dRMSEA_scaled))
+    num(paste0(pre, k, "dCFIrob"), sg(r$dCFI_robust)); num(paste0(pre, k, "dRMSEArob"), sg(r$dRMSEA_robust))
+  }
+}
+store(mi_g3, "MI"); store(mi_g1, "MIU"); store(mi_a3, "MIAge"); store(mi_a1, "MIAgeU")
+for (k in 1:3) num(paste0("Kappa", names(SCALES)[k]), f2(mi_g3$latent$mean_g2[k]))
+num("KappaUni", f2(mi_g1$latent$mean_g2))
+for (k in 1:3) num(paste0("KappaAge", names(SCALES)[k]), f2(mi_a3$latent$mean_g2[k]))
+num("PartialItems", paste(sub("dass", "", top4), collapse = ", "))
+num("PartialTopItem", sub("dass", "", part$item[1]))
+num("PartialTopChi", formatC(part$dchisq[1], format = "f", digits = 1))
+strip <- function(mi) { mi$fits <- lapply(mi$fits, function(f) lavaan::fitMeasures(f)); mi$data <- NULL; mi }
+saveRDS(list(gender_corr3 = strip(mi_g3), gender_unidim = strip(mi_g1),
+             age_corr3 = strip(mi_a3), age_unidim = strip(mi_a1),
+             partial = part, partial_top4 = list(items = top4, fit = fmeas(fp4), latent = lat4),
+             sum_vs_latent = obs_d),
+        file.path(RES, "invariance.rds"))
+log_close()
+```

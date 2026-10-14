@@ -1,0 +1,192 @@
+---
+title: "Step 4 — Differential item functioning (gender; bonus: age, education)"
+subtitle: "DASS-21 psychometric analysis (IRT final essay, SoSe 2026)"
+date: "`r format(Sys.time(), '%Y-%m-%d %H:%M')`"
+output:
+  html_document:
+    toc: true
+    keep_md: true
+---
+
+```{r opts, include = FALSE}
+knitr::opts_chunk$set(comment = "", message = FALSE, warning = TRUE)
+```
+
+
+
+```{r setup, include = FALSE}
+setup_file <- c("R/00_setup.R", "../R/00_setup.R")
+source(setup_file[file.exists(setup_file)][1])
+knitr::opts_knit$set(root.dir = PROJ)
+```
+
+```{r load}
+log_open("04")
+P <- readRDS(file.path(RES, "prepared.rds"))
+```
+
+**Methods.** All procedures match on the rest score with iterative purification.
+
+* Mantel–Haenszel (`difR::difMH`), ETS Δ\_MH = −2.35 ln α\_MH, ETS A/B/C classes
+  (A: p > .05 or |Δ| < 1; C: |Δ| ≥ 1.5 and p ≤ .05; B otherwise).
+* Logistic regression (`difR::difLogistic`): omnibus (2 df), uniform and
+  non-uniform tests; Nagelkerke ΔR² with Zumbo–Thomas / Jodoin–Gierl classes
+  (< .035 negligible, .035–.070 moderate, > .070 large).
+* Lord's χ² on separately calibrated 2PL parameters (`difR::difLord`).
+* STD P-DIF (Dorans): focal-weighted mean difference in endorsement proportion at
+  equal rest score, computed directly. **Its sign fixes the direction of every
+  effect independently of package conventions: positive = the focal group endorses
+  the item more at the same overall symptom level.**
+* Multiplicity: Benjamini–Hochberg within each grouping variable.
+
+Reference group / focal group: Group 1 / Group 2 (gender), younger / older (age),
+lower / higher education. Respondents with a missing covariate are excluded from
+that covariate's analysis.
+
+```{r dif-function}
+std_pdif <- function(X, g) {                  # g: 0 = reference, 1 = focal
+  sapply(seq_len(ncol(X)), function(j) {
+    rest <- rowSums(X[, -j]); d <- 0; w <- 0
+    for (s in unique(rest[g == 1])) {
+      f <- g == 1 & rest == s; r <- g == 0 & rest == s
+      if (sum(r) == 0) next
+      d <- d + sum(f) * (mean(X[f, j]) - mean(X[r, j])); w <- w + sum(f)
+    }
+    d / w
+  })
+}
+
+run_dif <- function(X, grp, label, lord = TRUE) {
+  keep <- !is.na(grp); X <- as.matrix(X[keep, ]); g <- as.integer(grp[keep]) - 1L
+  cat(sprintf("\n=== %s: n_ref = %d, n_focal = %d ===\n", label, sum(g == 0), sum(g == 1)))
+  mh  <- difR::difMH(Data = X, group = g, focal.name = 1, purify = TRUE,
+                     correct = TRUE, p.adjust.method = "BH")
+  lg  <- difR::difLogistic(Data = X, group = g, focal.name = 1, type = "both",
+                           criterion = "LRT", purify = TRUE, p.adjust.method = "BH")
+  lgu <- difR::difLogistic(Data = X, group = g, focal.name = 1, type = "udif",
+                           criterion = "LRT", purify = TRUE)
+  lgn <- difR::difLogistic(Data = X, group = g, focal.name = 1, type = "nudif",
+                           criterion = "LRT", purify = TRUE)
+  ld  <- if (lord) tryCatch(difR::difLord(Data = X, group = g, focal.name = 1, model = "2PL",
+                                          purify = TRUE, p.adjust.method = "BH"),
+                            error = function(e) { cat("Lord failed:", conditionMessage(e), "\n"); NULL })
+         else NULL
+  tab <- data.frame(
+    item = 1:21, sub = substr(SUBSCALE_OF[ITEMS], 1, 1),
+    mh_chi = as.numeric(mh$MH), mh_p = as.numeric(mh$p.value), mh_p_bh = as.numeric(mh$adjusted.p),
+    delta_mh = -2.35 * log(as.numeric(mh$alphaMH)),
+    std_pdif = std_pdif(X, g),
+    lr_chi = as.numeric(lg$Logistik), lr_p = as.numeric(lg$p.value),
+    lr_p_bh = as.numeric(lg$adjusted.p), dR2 = as.numeric(lg$deltaR2),
+    lr_u = as.numeric(lgu$Logistik), lr_u_p = as.numeric(lgu$p.value),
+    lr_nu = as.numeric(lgn$Logistik), lr_nu_p = as.numeric(lgn$p.value),
+    lord_chi = if (is.null(ld)) NA else as.numeric(ld$LordChi),
+    lord_p   = if (is.null(ld)) NA else as.numeric(ld$p.value),
+    lord_p_bh = if (is.null(ld)) NA else as.numeric(ld$adjusted.p))
+  tab$lr_nu_p_bh <- p.adjust(tab$lr_nu_p, "BH")
+  tab$ets <- with(tab, ifelse(mh_p > .05 | abs(delta_mh) < 1, "A",
+                       ifelse(abs(delta_mh) >= 1.5, "C", "B")))
+  tab$zumbo <- with(tab, ifelse(dR2 < .035, "A", ifelse(dR2 < .070, "B", "C")))
+  print(format(tab, digits = 3))
+  cat("\nBH-significant (logistic omnibus):", paste(tab$item[tab$lr_p_bh < .05], collapse = ", "), "\n")
+  cat("BH-significant (Mantel-Haenszel): ", paste(tab$item[tab$mh_p_bh < .05], collapse = ", "), "\n")
+  cat("BH-significant (Lord):            ", paste(tab$item[which(tab$lord_p_bh < .05)], collapse = ", "), "\n")
+  cat("Non-uniform DIF, p < .05 unadjusted:", paste(tab$item[tab$lr_nu_p < .05], collapse = ", "),
+      "| after BH:", paste(tab$item[tab$lr_nu_p_bh < .05], collapse = ", "), "\n")
+  cat("ETS classes:", paste(names(table(tab$ets)), table(tab$ets), collapse = "  "),
+      "| Zumbo classes:", paste(names(table(tab$zumbo)), table(tab$zumbo), collapse = "  "), "\n")
+  cat("Direction check: sign(Delta_MH) == sign(STD P-DIF) for all items:",
+      all(sign(tab$delta_mh) == sign(tab$std_pdif)), "\n")
+  write.csv(tab, file.path(RES, paste0("dif_", label, ".csv")), row.names = FALSE)
+  tab
+}
+```
+
+# 1. Gender, rule A (primary)
+
+```{r gender-A}
+dA <- run_dif(P$bin_A, P$gender, "A_gender")
+sigA <- dA$item[dA$lr_p_bh < .05]
+cat("Direction of flagged items (STD P-DIF > 0 = Group 2 endorses more):\n")
+print(dA[dA$item %in% sigA, c("item", "sub", "delta_mh", "std_pdif", "dR2")], digits = 3)
+```
+
+# 2. Gender, rule B (sensitivity)
+
+```{r gender-B}
+dB <- run_dif(P$bin_B, P$gender, "B_gender")
+sigB <- dB$item[dB$lr_p_bh < .05]
+cat("\nOverlap of BH-significant sets, rule A and rule B:", paste(intersect(sigA, sigB), collapse = ", "), "\n")
+cat("Overlap of ETS-C sets:", paste(intersect(dA$item[dA$ets == "C"], dB$item[dB$ets == "C"]), collapse = ", "), "\n")
+```
+
+# 3. Bonus: age and education (exploratory)
+
+Median splits are used for comparability with the gender analysis. Because
+dichotomising a continuous covariate discards information, the same
+logistic-regression DIF test is repeated in section 4 with age and education
+as **continuous** covariates.
+
+```{r age-edu}
+dAge <- run_dif(P$bin_A, P$age_grp, "A_age")
+dEdu <- run_dif(P$bin_A, P$edu_grp, "A_edu")
+```
+
+# 4. Continuous-covariate logistic DIF (robustness for section 3)
+
+Models per item: (1) y ~ rest; (2) + covariate; (3) + covariate × rest.
+Uniform DIF = (2) vs (1), non-uniform = (3) vs (2); Nagelkerke ΔR² = (3) vs (1).
+The rest score is the raw rest score (no purification), so this is a robustness
+check rather than a replacement.
+
+```{r continuous}
+nagelkerke <- function(m, m0, n) {
+  cs <- 1 - exp(2 * (as.numeric(logLik(m0)) - as.numeric(logLik(m))) / n)
+  cs / (1 - exp(2 * as.numeric(logLik(m0)) / n))
+}
+cont_dif <- function(X, cov, label) {
+  keep <- !is.na(cov); X <- as.matrix(X[keep, ]); z <- as.numeric(scale(cov[keep]))
+  n <- nrow(X)
+  out <- t(sapply(seq_len(ncol(X)), function(j) {
+    y <- X[, j]; rest <- as.numeric(scale(rowSums(X[, -j])))
+    m0 <- glm(y ~ 1, binomial); m1 <- glm(y ~ rest, binomial)
+    m2 <- glm(y ~ rest + z, binomial); m3 <- glm(y ~ rest * z, binomial)
+    c(beta_cov = unname(coef(m2)["z"]),
+      lr_u = 2 * (logLik(m2) - logLik(m1)), lr_nu = 2 * (logLik(m3) - logLik(m2)),
+      dR2 = nagelkerke(m3, m0, n) - nagelkerke(m1, m0, n))
+  }))
+  out <- data.frame(item = 1:21, out)
+  out$p_u  <- pchisq(out$lr_u, 1, lower.tail = FALSE)
+  out$p_nu <- pchisq(out$lr_nu, 1, lower.tail = FALSE)
+  out$p_total_bh <- p.adjust(pchisq(out$lr_u + out$lr_nu, 2, lower.tail = FALSE), "BH")
+  cat("\n===", label, "(continuous, n =", n, ") ===\n"); print(format(out, digits = 3))
+  cat("BH-significant:", paste(out$item[out$p_total_bh < .05], collapse = ", "),
+      "| max dR2 =", round(max(out$dR2), 4), "(item", out$item[which.max(out$dR2)], ")\n")
+  write.csv(out, file.path(RES, paste0("dif_continuous_", label, ".csv")), row.names = FALSE)
+  out
+}
+cAge <- cont_dif(P$bin_A, P$dat$Age, "age")
+cEdu <- cont_dif(P$bin_A, P$dat$Education_Years, "education")
+cat("\nAge items flagged by both the median split and the continuous test:",
+    paste(intersect(dAge$item[dAge$lr_p_bh < .05], cAge$item[cAge$p_total_bh < .05]), collapse = ", "), "\n")
+```
+
+# 5. Numbers for the essay and save
+
+```{r numbers}
+for (cls in c("A", "B", "C")) num(paste0("ETS", cls), sum(dA$ets == cls))
+num("DIFSig", paste(sigA, collapse = ", ")); num("DIFNSig", length(sigA))
+num("MaxDeltaMH", f2(max(abs(dA$delta_mh)))); num("MaxDeltaMHItem", dA$item[which.max(abs(dA$delta_mh))])
+num("MaxdRtwo", dec(max(dA$dR2), 3)); num("MaxdRtwoItem", dA$item[which.max(dA$dR2)])
+num("DIFSigB", paste(sigB, collapse = ", ")); num("DIFNSigB", length(sigB))
+num("DIFOverlapAB", paste(intersect(sigA, sigB), collapse = ", "))
+num("ETSCB", paste(dB$item[dB$ets == "C"], collapse = ", ")); num("ETSCNB", sum(dB$ets == "C"))
+num("DIFNonUnifItems", paste(dA$item[dA$lr_nu_p < .05], collapse = " and "))
+num("DIFAgeN", sum(dAge$lr_p_bh < .05)); num("DIFAgeMaxdR", dec(max(dAge$dR2), 3))
+num("DIFAgeETSC", paste(dAge$item[dAge$ets == "C"], collapse = ", "))
+num("DIFEduN", sum(dEdu$lr_p_bh < .05)); num("DIFEduMaxdR", dec(max(dEdu$dR2), 3))
+num("DIFAgeContN", sum(cAge$p_total_bh < .05)); num("DIFEduContN", sum(cEdu$p_total_bh < .05))
+saveRDS(list(gender_A = dA, gender_B = dB, age = dAge, edu = dEdu,
+             age_cont = cAge, edu_cont = cEdu), file.path(RES, "dif.rds"))
+log_close()
+```

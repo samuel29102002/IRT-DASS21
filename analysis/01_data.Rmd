@@ -1,0 +1,211 @@
+---
+title: "Step 1 — Data, missing values and dichotomisation"
+subtitle: "DASS-21 psychometric analysis (IRT final essay, SoSe 2026)"
+date: "`r format(Sys.time(), '%Y-%m-%d %H:%M')`"
+output:
+  html_document:
+    toc: true
+    keep_md: true
+---
+
+```{r opts, include = FALSE}
+knitr::opts_chunk$set(comment = "", message = FALSE, warning = TRUE)
+```
+
+
+
+
+```{r setup, include = FALSE}
+setup_file <- c("R/00_setup.R", "../R/00_setup.R")
+source(setup_file[file.exists(setup_file)][1])
+knitr::opts_knit$set(root.dir = PROJ)
+```
+
+```{r log}
+log_open("01")
+```
+
+# 1. Import and structure
+
+Missing values are stored in the Excel file as the literal string `#NULL!`.
+The file is read twice: once as text, to count those strings and to detect any
+other non-numeric content, and once with `#NULL!` declared as missing.
+
+```{r import}
+raw_txt <- as.data.frame(readxl::read_excel(file.path(DATA, "DASS.xlsx"), col_types = "text"))
+raw     <- as.data.frame(readxl::read_excel(file.path(DATA, "DASS.xlsx"), na = "#NULL!"))
+num_vars <- c(ITEMS, "Age", "Education_Years", "Gender", "Marital_Status")
+for (v in num_vars) raw[[v]] <- suppressWarnings(as.numeric(raw[[v]]))
+
+cat("Dimensions:", nrow(raw), "rows x", ncol(raw), "columns\n")
+cat("Columns:", paste(names(raw), collapse = ", "), "\n\n")
+```
+
+```{r null-strings}
+# In DASS.xlsx the "#NULL!" entries are Excel *error cells* (not text). readxl
+# returns error cells as NA, so missing values are counted as NA in the text
+# import; any non-numeric text left over would indicate a coding problem.
+na_txt <- colSums(is.na(raw_txt))
+na_txt[na_txt > 0]
+other <- sapply(num_vars, function(v) {
+  x <- raw_txt[[v]]; x <- x[!is.na(x)]
+  sum(is.na(suppressWarnings(as.numeric(x))))
+})
+```
+
+# 2. Item responses
+
+```{r items}
+vals <- sort(unique(unlist(raw[ITEMS])))
+cat("Distinct item values:", paste(vals, collapse = ", "), "\n")
+cat("\nResponse frequencies (%), full sample:\n")
+round(t(sapply(ITEMS, function(i) 100 * prop.table(table(factor(raw[[i]], 0:3))))), 1)
+```
+
+# 3. Covariates
+
+```{r covariates}
+table(Gender = raw$Gender)
+desc_num <- function(x) round(c(mean = mean(x, na.rm = TRUE), sd = sd(x, na.rm = TRUE),
+  min = min(x, na.rm = TRUE), median = median(x, na.rm = TRUE), max = max(x, na.rm = TRUE),
+  n_missing = sum(is.na(x))), 2)
+rbind(Age = desc_num(raw$Age), Education_Years = desc_num(raw$Education_Years))
+table(Marital_Status = raw$Marital_Status)
+cat("\nMean age by marital status (relevant to excluding it as a DIF covariate):\n")
+round(tapply(raw$Age, raw$Marital_Status, mean, na.rm = TRUE), 1)
+```
+
+## Evidence on the coding of gender
+
+No codebook was supplied. The last character of the ID and the direction of the
+mean differences are the only indirect evidence.
+
+```{r gender-coding}
+suffix <- toupper(substr(raw$ID, nchar(raw$ID), nchar(raw$ID)))
+suffix[!suffix %in% c("M", "P")] <- "other"
+table(ID_suffix = suffix, Gender = raw$Gender)
+```
+
+# 4. Missing data
+
+```{r missing}
+miss_item <- colSums(is.na(raw[ITEMS]))
+miss_case <- rowSums(is.na(raw[ITEMS]))
+miss_item[miss_item > 0]
+cat("Missing item cells:", sum(miss_item), sprintf("(%.3f%% of %d)", 100 * sum(miss_item) / (nrow(raw) * 21), nrow(raw) * 21),
+    "| respondents with a missing item:", sum(miss_case > 0),
+    "| max missing per respondent:", max(miss_case), "\n")
+
+idx <- which(miss_case > 0)
+data.frame(row = idx, ID = raw$ID[idx], Gender = raw$Gender[idx], Age = raw$Age[idx],
+           missing_item = apply(is.na(raw[idx, ITEMS]), 1, function(r) ITEMS[r]),
+           mean_observed_item = round(rowMeans(raw[idx, ITEMS], na.rm = TRUE), 2),
+           row.names = NULL)
+cat("Mean item score - incomplete cases:", round(mean(rowMeans(raw[idx, ITEMS], na.rm = TRUE)), 3),
+    "| complete cases:", round(mean(rowMeans(raw[-idx, ITEMS])), 3), "\n")
+
+ft <- fisher.test(table(miss_case > 0, raw$Gender))
+cat("Fisher exact test, missingness x gender: p =", round(ft$p.value, 3), "\n")
+```
+
+With only eight incomplete cases the Fisher test has almost no power: it can rule
+out a gross group-related pattern, but it cannot establish that the data are MCAR.
+
+```{r missing-numbers, include = FALSE}
+num("NTotal",       nrow(raw))
+num("NGroupOne",    sum(raw$Gender == 1))
+num("NGroupTwo",    sum(raw$Gender == 2))
+num("AgeMean",      f2(mean(raw$Age, na.rm = TRUE)))
+num("AgeSD",        f2(sd(raw$Age, na.rm = TRUE)))
+num("AgeMin",       min(raw$Age, na.rm = TRUE))
+num("AgeMax",       max(raw$Age, na.rm = TRUE))
+num("EduMean",      f2(mean(raw$Education_Years, na.rm = TRUE)))
+num("EduSD",        f2(sd(raw$Education_Years, na.rm = TRUE)))
+num("MissCells",    sum(miss_item))
+num("MissPct",      f2(100 * sum(miss_item) / (nrow(raw) * 21)))
+num("MissCases",    sum(miss_case > 0))
+num("MissCasesPct", formatC(100 * mean(miss_case > 0), format = "f", digits = 1))
+num("MissFisherP",  dec(ft$p.value, 2))
+write.csv(data.frame(item = ITEMS, n_missing = as.integer(miss_item)),
+          file.path(RES, "missingness.csv"), row.names = FALSE)
+```
+
+# 5. Analysis sample
+
+All subsequent analyses use the respondents with complete item responses.
+
+```{r sample}
+dat <- raw[complete.cases(raw[ITEMS]), ]
+cat("Analysis sample N =", nrow(dat), "\n"); print(table(Gender = dat$Gender))
+
+items_df <- dat[, ITEMS]
+gender  <- factor(dat$Gender, levels = c(1, 2), labels = c("Group 1", "Group 2"))
+age_med <- median(dat$Age, na.rm = TRUE)
+edu_med <- median(dat$Education_Years, na.rm = TRUE)
+age_grp <- factor(ifelse(dat$Age >= age_med, "older", "younger"), levels = c("younger", "older"))
+edu_grp <- factor(ifelse(dat$Education_Years > edu_med, "higher", "lower"), levels = c("lower", "higher"))
+cat("Age median:", age_med, "\n");       print(table(age_grp, useNA = "ifany"))
+cat("Education median:", edu_med, "\n"); print(table(edu_grp, useNA = "ifany"))
+
+sums <- data.frame(
+  Total      = rowSums(items_df),
+  Depression = rowSums(items_df[paste0("dass", DEP)]),
+  Anxiety    = rowSums(items_df[paste0("dass", ANX)]),
+  Stress     = rowSums(items_df[paste0("dass", STR)]))
+```
+
+```{r sample-numbers, include = FALSE}
+num("NAnalysis", nrow(dat))
+num("NAnalysisGroupOne", sum(dat$Gender == 1))
+num("NAnalysisGroupTwo", sum(dat$Gender == 2))
+num("AgeMedian", age_med); num("EduMedian", edu_med)
+num("NAgeYoung", sum(age_grp == "younger", na.rm = TRUE)); num("NAgeOld",  sum(age_grp == "older",  na.rm = TRUE))
+num("NEduLow",   sum(edu_grp == "lower",   na.rm = TRUE)); num("NEduHigh", sum(edu_grp == "higher", na.rm = TRUE))
+```
+
+## Group differences on the subscale sums
+
+```{r gender-d}
+gd <- do.call(rbind, lapply(names(SCALES), function(nm) {
+  s <- sums[[nm]]; g1 <- s[dat$Gender == 1]; g2 <- s[dat$Gender == 2]
+  d <- (mean(g2) - mean(g1)) / sqrt((var(g1) + var(g2)) / 2)
+  num(paste0("DGender", substr(nm, 1, 3)), dec(d, 2))
+  data.frame(scale = nm, M_g1 = mean(g1), SD_g1 = sd(g1), M_g2 = mean(g2), SD_g2 = sd(g2),
+             d_g2_minus_g1 = d, welch_p = t.test(g2, g1)$p.value)
+}))
+format(gd, digits = 3)
+```
+
+# 6. Dichotomisation
+
+* **Rule A** — 0 vs 1–3 ("the symptom applied at all"): primary analysis.
+* **Rule B** — 0–1 vs 2–3 ("applied to a considerable degree or more"): sensitivity analysis.
+
+```{r dich}
+bin_A <- as.data.frame(lapply(items_df, function(x) as.integer(x >= 1)))
+bin_B <- as.data.frame(lapply(items_df, function(x) as.integer(x >= 2)))
+names(bin_A) <- names(bin_B) <- ITEMS
+
+dich <- do.call(rbind, lapply(c("A", "B"), function(r) {
+  b <- get(paste0("bin_", r)); p <- colMeans(b); tot <- rowSums(b)
+  num(paste0("PMin", r),  dec(min(p)));  num(paste0("PMax", r), dec(max(p)))
+  num(paste0("PMean", r), dec(mean(p)))
+  num(paste0("Floor", r), formatC(100 * mean(tot == 0),  format = "f", digits = 1))
+  num(paste0("Ceil",  r), formatC(100 * mean(tot == 21), format = "f", digits = 1))
+  data.frame(rule = r, p_min = min(p), item_min = names(which.min(p)),
+             p_max = max(p), item_max = names(which.max(p)), p_mean = mean(p),
+             floor_pct = 100 * mean(tot == 0), ceiling_pct = 100 * mean(tot == 21))
+}))
+format(dich, digits = 3)
+round(rbind(rule_A = colMeans(bin_A), rule_B = colMeans(bin_B)), 3)
+```
+
+# 7. Save
+
+```{r save}
+saveRDS(list(raw = raw, dat = dat, items = items_df, gender = gender,
+             age_grp = age_grp, edu_grp = edu_grp, sums = sums,
+             bin_A = bin_A, bin_B = bin_B),
+        file.path(RES, "prepared.rds"))
+log_close()
+```

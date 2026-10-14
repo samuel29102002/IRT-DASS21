@@ -1,0 +1,107 @@
+---
+title: "Step 0 — Environment check"
+subtitle: "DASS-21 psychometric analysis (IRT final essay, SoSe 2026)"
+date: "`r format(Sys.time(), '%Y-%m-%d %H:%M')`"
+output:
+  html_document:
+    toc: true
+    keep_md: true
+---
+
+```{r opts, include = FALSE}
+knitr::opts_chunk$set(comment = "", message = FALSE, warning = TRUE)
+```
+
+
+This report installs any missing packages, records the R and package versions
+the analysis is run with, and probes the package functions whose interface
+differs between versions. The later reports are adapted to what these probes show.
+
+# 1. Packages
+
+```{r install}
+pkgs <- c("readxl", "psych", "lavaan", "semTools", "eRm", "mirt", "difR", "ltm",
+          "BifactorIndicesCalculator", "GPArotation", "pbivnorm", "ggplot2", "gridExtra",
+          "rmarkdown", "knitr")
+miss <- pkgs[!vapply(pkgs, requireNamespace, logical(1), quietly = TRUE)]
+if (length(miss)) install.packages(miss, repos = "https://cloud.r-project.org")
+cat("Installed during this run:", if (length(miss)) paste(miss, collapse = ", ") else "none", "\n")
+```
+
+```{r setup}
+setup_file <- c("R/00_setup.R", "../R/00_setup.R")
+source(setup_file[file.exists(setup_file)][1])
+knitr::opts_knit$set(root.dir = PROJ)
+cat("Project root:", PROJ, "\n")
+```
+
+# 2. R and package versions
+
+```{r versions}
+cat(R.version.string, "\n", R.version$platform, "\n", sep = "")
+data.frame(package = pkgs,
+           version = vapply(pkgs, function(p) as.character(packageVersion(p)), ""),
+           row.names = NULL)
+```
+
+# 3. Argument names of version-sensitive functions
+
+```{r args}
+probe <- function(label, expr) {
+  cat("\n>>", label, "\n")
+  print(tryCatch(expr, error = function(e) paste("ERROR:", conditionMessage(e))))
+}
+probe("semTools::compRelSEM",    names(formals(semTools::compRelSEM)))
+probe("semTools::measEq.syntax", names(formals(semTools::measEq.syntax)))
+probe("BifactorIndicesCalculator::bifactorIndices",
+      names(formals(BifactorIndicesCalculator::bifactorIndices)))
+probe("difR::difMH",       names(formals(difR::difMH)))
+probe("difR::difLogistic", names(formals(difR::difLogistic)))
+probe("difR::difLord",     names(formals(difR::difLord)))
+```
+
+# 4. Live probes on a small part of the real data
+
+These only show the *structure* of each package's output; the numbers are not
+used anywhere.
+
+```{r probes}
+d <- as.data.frame(readxl::read_excel(file.path(DATA, "DASS.xlsx"), na = "#NULL!"))
+d <- d[complete.cases(d[ITEMS]), ITEMS]
+d[] <- lapply(d, as.numeric)
+b6 <- as.matrix((d[, 1:6] >= 1) * 1)
+
+probe("eRm: names(RM(.))", names(eRm::RM(b6)))
+probe("eRm: names(itemfit(person.parameter(RM(.))))",
+      names(eRm::itemfit(eRm::person.parameter(eRm::RM(b6)))))
+probe("mirt: extract.mirt(., 'nest') and 'logLik'", {
+  m <- mirt::mirt(as.data.frame(b6), 1, "2PL", verbose = FALSE)
+  c(nest = mirt::extract.mirt(m, "nest"), logLik = mirt::extract.mirt(m, "logLik"))
+})
+probe("difR: names(difMH(.))", {
+  g <- rep(0:1, length.out = nrow(b6))
+  names(difR::difMH(Data = b6, group = g, focal.name = 1))
+})
+```
+
+```{r bifactor-probe}
+bf <- 'G  =~ dass3 + dass5 + dass10 + dass2 + dass4 + dass7
+       S1 =~ dass3 + dass5 + dass10
+       S2 =~ dass2 + dass4 + dass7'
+fit_bf <- tryCatch(
+  lavaan::cfa(bf, data = d, std.lv = TRUE, orthogonal = TRUE, estimator = "WLSMV",
+              ordered = c("dass3", "dass5", "dass10", "dass2", "dass4", "dass7")),
+  error = function(e) e)
+probe("small bifactor converged?",
+      if (inherits(fit_bf, "error")) conditionMessage(fit_bf) else lavaan::lavInspect(fit_bf, "converged"))
+probe("str(BifactorIndicesCalculator::bifactorIndices(fit))",
+      str(BifactorIndicesCalculator::bifactorIndices(fit_bf)))
+probe("semTools::compRelSEM(fit)", semTools::compRelSEM(fit_bf))
+probe("lavPredict on ordered data (EBM)", dim(lavaan::lavPredict(fit_bf, method = "EBM")))
+```
+
+# 5. Session information
+
+```{r session}
+sessionInfo()
+```

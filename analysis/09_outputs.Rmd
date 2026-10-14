@@ -1,0 +1,367 @@
+---
+title: "Step 9 — Tables, figures and numbers for the essay"
+subtitle: "DASS-21 psychometric analysis (IRT final essay, SoSe 2026)"
+date: "`r format(Sys.time(), '%Y-%m-%d %H:%M')`"
+output:
+  html_document:
+    toc: true
+    keep_md: true
+---
+
+```{r opts, include = FALSE}
+knitr::opts_chunk$set(comment = "", message = FALSE, warning = TRUE,
+                      fig.width = 7, fig.height = 3.2, dpi = 110)
+```
+
+
+
+```{r setup, include = FALSE}
+setup_file <- c("R/00_setup.R", "../R/00_setup.R")
+source(setup_file[file.exists(setup_file)][1])
+knitr::opts_knit$set(root.dir = PROJ)
+library(ggplot2)
+```
+
+This report creates **every** table body (`tables/*.tex`), figure (`figures/*.pdf`)
+and the macro file `essay/numbers.tex` used by the essay. Nothing is typed by hand.
+
+```{r load}
+log_open("09")
+P   <- readRDS(file.path(RES, "prepared.rds"))
+CT  <- readRDS(file.path(RES, "ctt.rds"))
+IRT <- readRDS(file.path(RES, "irt_binary.rds"))
+DIF <- readRDS(file.path(RES, "dif.rds"))
+CFA <- readRDS(file.path(RES, "cfa.rds"))
+REL <- readRDS(file.path(RES, "reliability.rds"))
+MI  <- readRDS(file.path(RES, "invariance.rds"))
+GRM <- readRDS(file.path(RES, "grm.rds"))
+
+FIT_FAMILY <- "scaled"     # "scaled" or "robust": which CFI/RMSEA family the tables report
+ORD  <- ITEM_ORDER
+SUB1 <- function(i) substr(SUBSCALE_OF[paste0("dass", i)], 1, 1)
+COL  <- c(Depression = "#31527d", Anxiety = "#a4243b", Stress = "#3f7d5c")
+theme_set(theme_classic(base_size = 9, base_family = "serif") +
+          theme(legend.position = "top", strip.background = element_blank()))
+save_fig <- function(p, file, w = 6.3, h = 2.8) {
+  ggsave(file.path(FIGS, file), p, width = w, height = h, device = "pdf"); print(p)
+}
+side_by_side <- function(p1, p2) gridExtra::arrangeGrob(p1, p2, ncol = 2)
+```
+
+# 1. Tables
+
+```{r tab-descriptives}
+d <- CT$desc; it <- CT$item_total
+rows <- sapply(ORD, function(i) paste(c(i, SUB1(i), f2(d$mean[i]), f2(d$sd[i]),
+  sprintf("%.0f", c(d$p0[i], d$p1[i], d$p2[i], d$p3[i])),
+  dec(it$r_drop[i]), dec(it$r_drop_own_subscale[i]),
+  dec(IRT$A$p[i]), dec(IRT$B$p[i])), collapse = " & "))
+write_rows(paste0(rows, " \\\\"), "tab_descriptives"); head(rows, 3)
+```
+
+```{r tab-ctt}
+om  <- c(Total = REL$omega_uni, REL$omega_sub)
+omg <- c(Total = REL$gy$uni, REL$gy$sub)
+rows <- sapply(c("Total", names(SCALES)), function(s) { v <- CT$ctt[[s]]
+  paste(c(s, v$k, f2(v$mean), f2(v$sd), f2(v$skew), dec(v$avg_r),
+          sprintf("%s [%s, %s]", dec(v$alpha, 3), dec(v$alpha_lo, 3), dec(v$alpha_hi, 3)),
+          dec(om[[s]], 3), dec(omg[[s]], 3), f2(v$sem)), collapse = " & ") })
+write_rows(paste0(rows, " \\\\"), "tab_ctt"); rows
+```
+
+```{r tab-irt}
+A <- IRT$A; B <- IRT$B
+rows <- sapply(ORD, function(i) paste(c(i, SUB1(i), dec(A$p[i]), f2(A$b_cml[i]), f2(A$se_cml[i]),
+  f2(A$infit[i]), f2(A$outfit[i]), f2(A$a[i]), f2(A$se_a[i]), f2(A$b[i]), f2(A$se_b[i])), collapse = " & "))
+write_rows(paste0(rows, " \\\\"), "tab_irt_A")
+rows <- sapply(ORD, function(i) paste(c(i, SUB1(i), dec(B$p[i]), f2(B$b_cml[i]), f2(B$infit[i]),
+  f2(B$outfit[i]), f2(B$a[i]), f2(B$b[i])), collapse = " & "))
+write_rows(paste0(rows, " \\\\"), "tab_irt_B")
+rows <- unlist(lapply(c("A", "B"), function(r) { o <- IRT[[r]]; an <- o$anova
+  c(paste(c(paste("Rule", r), "1PL", mirt::extract.mirt(o$m1, "nest"),
+            sprintf("%.1f", mirt::extract.mirt(o$m1, "logLik")),
+            sprintf("%.0f", mirt::extract.mirt(o$m1, "AIC")), sprintf("%.0f", mirt::extract.mirt(o$m1, "BIC")),
+            "", ""), collapse = " & "),
+    paste(c("", "2PL", mirt::extract.mirt(o$m2, "nest"),
+            sprintf("%.1f", mirt::extract.mirt(o$m2, "logLik")),
+            sprintf("%.0f", mirt::extract.mirt(o$m2, "AIC")), sprintf("%.0f", mirt::extract.mirt(o$m2, "BIC")),
+            sprintf("%.1f", an$X2[2]), if (an$p[2] < .001) "$<.001$" else dec(an$p[2], 3)), collapse = " & ")) }))
+write_rows(paste0(rows, " \\\\"), "tab_irt_models"); rows
+```
+
+```{r tab-dif}
+g <- DIF$gender_A
+rows <- sapply(ORD, function(i) { r <- g[g$item == i, ]
+  paste(c(i, SUB1(i), paste0(f2(r$mh_chi), stars(r$mh_p)), f2(r$delta_mh), r$ets,
+          paste0(f2(r$lr_u), stars(r$lr_u_p)), paste0(f2(r$lr_nu), stars(r$lr_nu_p)),
+          dec(r$dR2, 3), r$zumbo,
+          if (is.na(r$lord_chi)) "--" else paste0(f2(r$lord_chi), stars(r$lord_p))), collapse = " & ") })
+write_rows(paste0(rows, " \\\\"), "tab_dif_gender"); head(rows, 3)
+```
+
+```{r tab-cfa}
+ft <- CFA$fit_tab
+labs <- c(M1 = "M1. Unidimensional", M2 = "M2. Correlated three-factor",
+          M3 = "M3. Second-order\\textsuperscript{a}", M4 = "M4. Bifactor")
+cfi <- paste0("cfi.", FIT_FAMILY); tli <- paste0("tli.", FIT_FAMILY); rm <- paste0("rmsea.", FIT_FAMILY)
+rows <- sapply(names(labs), function(m) paste(c(labs[m], ft[m, "npar"],
+  sprintf("%.1f", ft[m, "chisq.scaled"]), ft[m, "df.scaled"], dec(ft[m, cfi], 3), dec(ft[m, tli], 3),
+  if (FIT_FAMILY == "scaled") sprintf("%s [%s, %s]", dec(ft[m, rm], 3), dec(ft[m, "rmsea.ci.lower.scaled"], 3),
+                                      dec(ft[m, "rmsea.ci.upper.scaled"], 3)) else dec(ft[m, rm], 3),
+  dec(ft[m, "srmr"], 3)), collapse = " & "))
+write_rows(paste0(rows, " \\\\"), "tab_cfa_fit"); rows
+```
+
+```{r tab-dimensionality}
+s <- REL$sub_bi
+rows <- c(
+  sprintf("$\\omega$, unidimensional model (linear) & %s & sum-score variance due to one common factor (latent-response metric) \\\\", dec(REL$omega_uni, 3)),
+  sprintf("$\\omega$, unidimensional model (Green--Yang) & %s & same, in the metric of the observed 0--3 scores \\\\", dec(REL$gy$uni, 3)),
+  sprintf("$\\omega_{T}$, bifactor & %s & variance due to general \\emph{and} specific factors \\\\", dec(REL$omegaT, 3)),
+  sprintf("$\\omega_{H}$, bifactor (linear) & %s & variance due to the general factor alone \\\\", dec(REL$omegaH, 3)),
+  sprintf("$\\omega_{H}$, bifactor (Green--Yang) & %s & same, observed-score metric \\\\", dec(REL$gy$H, 3)),
+  sprintf("$\\omega_{H}/\\omega_{T}$ & %s & share of reliable variance due to the general factor \\\\", dec(REL$omegaH / REL$omegaT, 3)),
+  sprintf("ECV & %s & share of common variance explained by the general factor \\\\", dec(REL$ECV, 3)),
+  sprintf("PUC & %s & share of item correlations not affected by the specific factors \\\\", dec(REL$PUC, 2)),
+  sprintf("Factor determinacy, general & %s & correlation of factor-score estimates with the factor \\\\", dec(REL$FD$M4[1], 3)),
+  sapply(seq_along(SCALES), function(k) sprintf(
+    "\\quad %s: $\\omega$ / $\\omega_{S}$ / FD & %s / %s / %s & subscale total, unique part, determinacy \\\\",
+    names(SCALES)[k], dec(s[k, "omega"], 3), dec(s[k, "omegaS"], 3), dec(REL$FD$M4[k + 1], 3))))
+write_rows(rows, "tab_dimensionality"); rows
+```
+
+```{r tab-omega}
+tex_lab <- c("Cronbach's $\\alpha$ (raw item scores)", "Ordinal $\\alpha$ (polychoric correlations)",
+  "$\\omega$, unidimensional CFA (linear)", "$\\omega$, unidimensional CFA (Green--Yang)",
+  "$\\omega_{T}$, bifactor CFA (linear)", "$\\omega_{T}$, bifactor CFA (Green--Yang)",
+  "$\\omega_{H}$, bifactor CFA (linear)", "$\\omega_{H}$, bifactor CFA (Green--Yang)",
+  "$\\omega_{H}$, EFA + Schmid--Leiman", "$\\omega_{T}$, EFA + Schmid--Leiman")
+met <- c(latent = "latent response", observed = "observed score")
+rows <- sapply(seq_len(nrow(REL$compare)), function(k)
+  paste(tex_lab[k], met[[REL$compare$metric[k]]], dec(REL$compare$value[k], 3), sep = " & "))
+write_rows(paste0(rows, " \\\\"), "tab_omega"); rows
+```
+
+```{r tab-invariance}
+mi_rows <- function(mi, label) {
+  tb <- mi$tab; dl <- mi$deltas
+  cfi <- paste0("cfi.", FIT_FAMILY); rm <- paste0("rmsea.", FIT_FAMILY)
+  dc  <- paste0("dCFI_", FIT_FAMILY); dr <- paste0("dRMSEA_", FIT_FAMILY)
+  sg  <- function(x) sub("^([+-])0\\.", "\\1.", sprintf("%+.3f", x))
+  pv  <- function(p) if (p < .001) "$<.001$" else dec(p, 3)
+  steps <- c(configural = "Configural", metric = "Metric", scalar = "Scalar", strict = "Strict")
+  out <- sapply(seq_along(steps), function(k) { st <- names(steps)[k]
+    base <- c(if (k == 1) label else "", steps[k], sprintf("%.1f", tb[st, "chisq.scaled"]),
+              tb[st, "df.scaled"], dec(tb[st, cfi], 3), dec(tb[st, rm], 3))
+    dlt <- if (k == 1) rep("", 4) else { r <- dl[k - 1, ]
+      c(sprintf("%.1f (%d)", r$dchisq, r$ddf), pv(r$p), sg(r[[dc]]), sg(r[[dr]])) }
+    paste(c(base, dlt), collapse = " & ") })
+  r <- dl[4, ]
+  c(out, paste(c("", "\\emph{Scalar vs.\\ configural}", "", "", "", "",
+                 sprintf("%.1f (%d)", r$dchisq, r$ddf), pv(r$p), sg(r[[dc]]), sg(r[[dr]])), collapse = " & "))
+}
+g_rows <- c(paste0(mi_rows(MI$gender_corr3, "Three-factor"), " \\\\"), "\\addlinespace",
+            paste0(mi_rows(MI$gender_unidim, "One-factor"), " \\\\"))
+write_rows(g_rows, "tab_invariance")
+a_rows <- c(paste0(mi_rows(MI$age_corr3, "Three-factor"), " \\\\"), "\\addlinespace",
+            paste0(mi_rows(MI$age_unidim, "One-factor"), " \\\\"))
+write_rows(a_rows, "tab_invariance_age"); g_rows
+```
+
+```{r tab-grm}
+pt <- GRM$par
+rows <- sapply(ORD, function(i) paste(c(i, SUB1(i), f2(pt$a[i]), f2(pt$b1[i]), f2(pt$b2[i]),
+  f2(pt$b3[i]), f2(pt$spread[i]), f2(pt$info_max[i])), collapse = " & "))
+write_rows(paste0(rows, " \\\\"), "tab_grm")
+pretty <- c(GRM = "GRM", GRM_common_a = "GRM, common slope", GPCM = "GPCM", PCM = "PCM")
+rows <- apply(GRM$comp, 1, function(r) paste(pretty[[r[["model"]]]], r[["npar"]],
+  sprintf("%.1f", as.numeric(r[["logLik"]])), sprintf("%.0f", as.numeric(r[["AIC"]])),
+  sprintf("%.0f", as.numeric(r[["BIC"]])), sep = " & "))
+write_rows(paste0(rows, " \\\\"), "tab_poly_models"); rows
+```
+
+# 2. Figures
+
+```{r fig-distributions, fig.height = 3.4}
+df <- do.call(rbind, lapply(ORD, function(i) data.frame(item = factor(i, levels = ORD),
+  sub = SUBSCALE_OF[paste0("dass", i)], cat = factor(0:3),
+  pct = 100 * as.numeric(prop.table(table(factor(P$items[[paste0("dass", i)]], 0:3)))))))
+p <- ggplot(df, aes(item, pct, fill = cat)) + geom_col(width = .8, colour = "white", linewidth = .2) +
+  scale_fill_manual(values = c("#f0f0f0", "#bdbdbd", "#7f7f7f", "#3a3a3a"), name = "Response category") +
+  geom_vline(xintercept = c(7.5, 14.5), linetype = 3, linewidth = .3) +
+  annotate("text", x = c(4, 11, 18), y = 104, label = names(SCALES), size = 2.8, family = "serif") +
+  labs(x = "Item", y = "Percentage of respondents")
+save_fig(p, "fig_distributions.pdf", h = 3.3)
+```
+
+```{r fig-icc}
+th <- seq(-4, 4, length.out = 300)
+icc <- do.call(rbind, lapply(1:21, function(j) data.frame(theta = th, item = j,
+  sub = SUBSCALE_OF[ITEMS[j]], P = plogis(A$a[j] * (th - A$b[j])))))
+p1 <- ggplot(icc, aes(theta, P, group = item, colour = sub)) + geom_line(linewidth = .35, alpha = .8) +
+  scale_colour_manual(values = COL, name = NULL) + labs(x = expression(theta), y = "P(X = 1)", title = "All 21 items")
+sel <- c(11, 13, 21, 2)
+p2 <- ggplot(subset(icc, item %in% sel), aes(theta, P, linetype = factor(item))) + geom_line(linewidth = .6) +
+  scale_linetype_discrete(name = NULL, labels = sprintf("item %d (a = %.2f, b = %+.2f)", sel[order(sel)],
+                                                       A$a[sort(sel)], A$b[sort(sel)])) +
+  labs(x = expression(theta), y = NULL, title = "Selected items") + theme(legend.position = "inside", legend.position.inside = c(.3, .8))
+g <- side_by_side(p1, p2); ggsave(file.path(FIGS, "fig_icc.pdf"), g, width = 6.3, height = 2.9, device = "pdf")
+grid::grid.draw(g)
+```
+
+```{r fig-information}
+G <- A$grid
+ii <- do.call(rbind, lapply(1:21, function(j) data.frame(theta = G, item = j,
+  sub = SUBSCALE_OF[ITEMS[j]], I = A$info_items[, j])))
+p1 <- ggplot(ii, aes(theta, I, group = item, colour = sub)) + geom_line(linewidth = .35) +
+  scale_colour_manual(values = COL, name = NULL) + labs(x = expression(theta), y = "Item information",
+                                                        title = "2PL, rule A")
+ti <- rbind(data.frame(theta = GRM$grid, I = GRM$info, model = "GRM (4 categories)"),
+            data.frame(theta = G, I = A$info2, model = "2PL, rule A"),
+            data.frame(theta = G, I = B$info2, model = "2PL, rule B"))
+p2 <- ggplot(ti, aes(theta, I, linetype = model)) + geom_line(linewidth = .6) +
+  geom_hline(yintercept = 5, linetype = 3, linewidth = .3) +
+  annotate("text", x = -3.9, y = 6.3, label = "rel. = .80", hjust = 0, size = 2.6, family = "serif") +
+  labs(x = expression(theta), y = "Test information", linetype = NULL, title = "Test information") +
+  theme(legend.position = "inside", legend.position.inside = c(.25, .82))
+g <- side_by_side(p1, p2); ggsave(file.path(FIGS, "fig_information.pdf"), g, width = 6.3, height = 2.9, device = "pdf")
+grid::grid.draw(g)
+```
+
+```{r fig-wright, fig.height = 3.6}
+thp <- A$theta_ml[is.finite(A$theta_ml)]
+p1 <- ggplot(data.frame(theta = thp), aes(theta)) + geom_histogram(binwidth = .25, fill = "grey75", colour = "white") +
+  geom_vline(xintercept = mean(thp), linetype = 2, linewidth = .3) +
+  coord_cartesian(xlim = c(-4.5, 4.5)) + labs(x = NULL, y = "Persons")
+it_df <- data.frame(b = A$b_cml, item = 1:21, sub = SUBSCALE_OF[ITEMS])
+it_df$rank <- rank(it_df$b)
+p2 <- ggplot(it_df, aes(b, rank, colour = sub)) + geom_point(size = 1.8) +
+  geom_text(aes(label = item), nudge_x = .18, size = 2.3, colour = "black", family = "serif") +
+  geom_vline(xintercept = mean(thp), linetype = 2, linewidth = .3) +
+  scale_colour_manual(values = COL, name = NULL) + coord_cartesian(xlim = c(-4.5, 4.5)) +
+  labs(x = "Latent trait / item location (logits, Rasch rule A)", y = "Items (ordered)") +
+  theme(axis.text.y = element_blank(), axis.ticks.y = element_blank())
+g <- gridExtra::arrangeGrob(p1, p2, ncol = 1, heights = c(1, 1.6))
+ggsave(file.path(FIGS, "fig_wright.pdf"), g, width = 6.3, height = 3.6, device = "pdf"); grid::grid.draw(g)
+```
+
+```{r fig-dif}
+gd <- DIF$gender_A; gd$sub <- SUBSCALE_OF[ITEMS]
+p1 <- ggplot(gd, aes(factor(item), delta_mh, fill = sub)) + geom_col(width = .7) +
+  geom_hline(yintercept = c(-1.5, -1, 1, 1.5), linetype = c(2, 3, 3, 2), linewidth = .3) +
+  geom_hline(yintercept = 0, linewidth = .3) + scale_fill_manual(values = COL, name = NULL) +
+  labs(x = "Item", y = expression(Delta[MH]), title = "Mantel-Haenszel effect size") +
+  theme(axis.text.x = element_text(size = 6))
+worst <- gd$item[which.max(gd$dR2)]
+fits_g <- lapply(levels(P$gender), function(lv)
+  mirt::mirt(as.data.frame(P$bin_A[P$gender == lv, ]), 1, "2PL", verbose = FALSE))
+cg <- lapply(fits_g, function(m) mirt::coef(m, IRTpars = TRUE, simplify = TRUE)$items[worst, ])
+dd <- rbind(data.frame(theta = th, P = plogis(cg[[1]]["a"] * (th - cg[[1]]["b"])), group = "Group 1"),
+            data.frame(theta = th, P = plogis(cg[[2]]["a"] * (th - cg[[2]]["b"])), group = "Group 2"))
+p2 <- ggplot(dd, aes(theta, P, linetype = group)) + geom_line(linewidth = .6) +
+  labs(x = expression(theta), y = "P(X = 1)", linetype = NULL,
+       title = sprintf("Item %d, calibrated separately by group", worst)) + theme(legend.position = "inside", legend.position.inside = c(.2, .85))
+g <- side_by_side(p1, p2); ggsave(file.path(FIGS, "fig_dif.pdf"), g, width = 6.3, height = 2.9, device = "pdf")
+grid::grid.draw(g)
+```
+
+```{r fig-bifactor}
+lt <- CFA$loadings
+bl <- rbind(data.frame(item = factor(lt$item, levels = ORD), loading = lt$M4_general, factor = "General"),
+            data.frame(item = factor(lt$item, levels = ORD), loading = lt$M4_specific, factor = "Specific"))
+p <- ggplot(bl, aes(item, loading, fill = factor)) + geom_col(position = position_dodge(.8), width = .75) +
+  scale_fill_manual(values = c(General = "grey30", Specific = "grey70"), name = NULL) +
+  geom_hline(yintercept = .3, linetype = 3, linewidth = .3) + geom_vline(xintercept = c(7.5, 14.5), linetype = 3, linewidth = .3) +
+  labs(x = "Item (Depression | Anxiety | Stress)", y = "Standardised loading")
+save_fig(p, "fig_bifactor.pdf", h = 2.8)
+```
+
+```{r fig-grm-cat, fig.height = 2.2}
+sel <- c(11, 13, 21, 2)
+cc <- do.call(rbind, lapply(sel, function(j) {
+  pr <- mirt::probtrace(mirt::extract.item(GRM$grm, j), th)
+  data.frame(theta = rep(th, 4), P = as.vector(pr), cat = factor(rep(0:3, each = length(th))),
+             item = sprintf("item %d (a = %.2f)", j, GRM$par$a[j]))
+}))
+cc$item <- factor(cc$item, levels = unique(cc$item))
+p <- ggplot(cc, aes(theta, P, colour = cat)) + geom_line(linewidth = .55) + facet_wrap(~item, nrow = 1) +
+  scale_colour_manual(values = c("grey75", "grey55", "grey35", "black"), name = "Category") +
+  labs(x = expression(theta), y = "P(X = c)")
+save_fig(p, "fig_grm_cat.pdf", w = 6.6, h = 2.2)
+```
+
+```{r fig-ctt-irt}
+ci <- data.frame(item = 1:21, sub = SUBSCALE_OF[ITEMS], p = A$p, b = A$b, rpb = A$rpb, a = A$a)
+p1 <- ggplot(ci, aes(p, b, colour = sub)) + geom_point(size = 1.6) + scale_colour_manual(values = COL, name = NULL) +
+  labs(x = "CTT easiness p", y = "2PL location b", title = sprintf("r = %.3f", cor(ci$p, ci$b)))
+p2 <- ggplot(ci, aes(rpb, a, colour = sub)) + geom_point(size = 1.6) +
+  geom_text(aes(label = item), nudge_x = .006, size = 2.2, colour = "black", family = "serif") +
+  scale_colour_manual(values = COL, name = NULL) +
+  labs(x = "Corrected item-total r (binary rest score)", y = "2PL discrimination a",
+       title = sprintf("r = %.3f", cor(ci$rpb, ci$a)))
+g <- side_by_side(p1, p2); ggsave(file.path(FIGS, "fig_ctt_irt.pdf"), g, width = 6.3, height = 2.9, device = "pdf")
+grid::grid.draw(g)
+```
+
+```{r fig-ifa-irt}
+fa <- data.frame(item = 1:21, sub = SUBSCALE_OF[ITEMS], a_ifa = CFA$ifa_irt$a_logit, a_2pl = A$a, a_grm = GRM$par$a)
+p <- ggplot(fa, aes(a_ifa, a_2pl, colour = sub)) + geom_abline(linetype = 3, linewidth = .3) + geom_point(size = 1.8) +
+  geom_text(aes(label = item), nudge_x = .03, size = 2.2, colour = "black", family = "serif") +
+  scale_colour_manual(values = COL, name = NULL) +
+  labs(x = expression(a == 1.702 * lambda / sqrt(1 - lambda^2) ~ "(CFA, four categories)"),
+       y = "a (2PL, rule A)", title = sprintf("r = %.2f", cor(fa$a_ifa, fa$a_2pl)))
+save_fig(p, "fig_ifa_irt.pdf", w = 4.2, h = 3)
+```
+
+```{r fig-residuals, fig.height = 3.2}
+hm <- do.call(rbind, lapply(names(c(M1 = 1, M4 = 1)), function(m) {
+  M <- CFA$residuals[[m]][paste0("dass", ORD), paste0("dass", ORD)]; diag(M) <- NA
+  data.frame(i = factor(rep(ORD, 21), levels = ORD), j = factor(rep(ORD, each = 21), levels = rev(ORD)),
+             r = as.vector(M), model = c(M1 = "Unidimensional", M4 = "Bifactor")[m])
+}))
+hm$model <- factor(hm$model, levels = c("Unidimensional", "Bifactor"))
+p <- ggplot(hm, aes(i, j, fill = r)) + geom_tile() + facet_wrap(~model) +
+  scale_fill_gradient2(low = "#2166ac", high = "#b2182b", limits = c(-.2, .2), na.value = "white",
+                       name = "Residual r") +
+  labs(x = NULL, y = NULL) + theme(axis.text = element_text(size = 5), legend.position = "right")
+save_fig(p, "fig_residuals.pdf", h = 3.1)
+```
+
+# 3. Additional numbers quoted in the prose
+
+```{r prose-numbers}
+top_pairs <- function(M, k) { M[lower.tri(M, diag = TRUE)] <- NA
+  o <- order(abs(M), decreasing = TRUE, na.last = NA)[1:k]
+  data.frame(i = sub("dass", "", rownames(M)[row(M)[o]]), j = sub("dass", "", colnames(M)[col(M)[o]]), r = M[o]) }
+tp <- top_pairs(CFA$residuals$M1, 3); print(tp)
+words <- c("One", "Two", "Three")
+for (k in 1:3) {
+  num(paste0("ResidPair", words[k]), sprintf("%s and %s", tp$i[k], tp$j[k]))
+  num(paste0("ResidVal", words[k]), dec(tp$r[k]))
+}
+num("NItemsModalZero", sum(apply(CT$desc[, c("p0", "p1", "p2", "p3")], 1, which.max) == 1))
+## limited-information fit of the 2PL (rule A) and of the GRM; S-X2 item fit
+num("MtwoRMSEAtwoPLA", dec(IRT$A$M2$RMSEA, 3)); num("MtwoCFItwoPLA", dec(IRT$A$M2$CFI, 3))
+num("MtwoSRMSRtwoPLA", dec(IRT$A$M2$SRMSR, 3))
+num("SXtwoMisfitA", sum(IRT$A$itemfit$p.S_X2 < .05))
+num("SXtwoMisfitBHA", sum(p.adjust(IRT$A$itemfit$p.S_X2, "BH") < .05))
+if (!is.null(GRM$itemfit)) num("GRMSXtwoMisfitBH", sum(GRM$itemfit$p_bh < .05))
+if (is.data.frame(GRM$M2)) num("GRMMtwoSRMSR", dec(GRM$M2$SRMSR, 3))
+num("MeanSEGRM", f2(mean(GRM$se))); num("MeanSEA", f2(mean(A$se_theta))); num("MeanSEB", f2(mean(B$se_theta)))
+## DIF: method-specific sets and direction
+g <- DIF$gender_A
+num("DIFSigMH", paste(g$item[g$mh_p_bh < .05], collapse = ", ")); num("DIFNSigMH", sum(g$mh_p_bh < .05))
+num("DIFNSigLord", sum(g$lord_p_bh < .05, na.rm = TRUE))
+num("DIFFocalMore", paste(g$item[g$lr_p_bh < .05 & g$delta_mh > 0], collapse = ", "))
+num("DIFRefMore",   paste(g$item[g$lr_p_bh < .05 & g$delta_mh < 0], collapse = ", "))
+## invariance: partial model and threshold releases
+for (k in seq_along(SCALES)) num(paste0("KappaPartial", names(SCALES)[k]), f2(MI$partial_top4$latent[k]))
+num("PartialNSigBH", sum(MI$partial$p_bh < .05))
+## construct replicability H of the specific factors
+for (k in seq_along(SCALES)) num(paste0("HSpec", names(SCALES)[k]), dec(REL$H[k + 1], 3))
+num("MaxPctCatThree", formatC(max(CT$desc$p3), format = "f", digits = 1))
+num("FitFamily", FIT_FAMILY)
+write_numbers()
+cat("Macros written:", length(.NUMBERS$vals), "\n")
+log_close()
+```

@@ -1,0 +1,16 @@
+data/*.xlsx
+results/
+.Rproj.user/
+.Rhistory
+.RData
+.DS_Store
+*.aux
+*.log
+*.bbl
+*.bcf
+*.blg
+*.fls
+*.fdb_latexmk
+*.run.xml
+*.out
+*.toc

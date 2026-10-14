@@ -1,0 +1,148 @@
+---
+title: "Step 2 — Descriptive statistics and classical test theory"
+subtitle: "DASS-21 psychometric analysis (IRT final essay, SoSe 2026)"
+date: "`r format(Sys.time(), '%Y-%m-%d %H:%M')`"
+output:
+  html_document:
+    toc: true
+    keep_md: true
+---
+
+```{r opts, include = FALSE}
+knitr::opts_chunk$set(comment = "", message = FALSE, warning = TRUE)
+```
+
+
+
+```{r setup, include = FALSE}
+setup_file <- c("R/00_setup.R", "../R/00_setup.R")
+source(setup_file[file.exists(setup_file)][1])
+knitr::opts_knit$set(root.dir = PROJ)
+```
+
+```{r load}
+log_open("02")
+P <- readRDS(file.path(RES, "prepared.rds"))
+X <- P$items; sums <- P$sums
+cat("Analysis sample N =", nrow(X), "\n")
+```
+
+# 1. Item descriptives (analysis sample, N = 1214)
+
+```{r item-desc}
+pc <- t(apply(X, 2, function(x) 100 * prop.table(table(factor(x, levels = 0:3)))))
+desc <- data.frame(item = 1:21, subscale = SUBSCALE_OF[ITEMS],
+                   mean = colMeans(X), sd = apply(X, 2, sd),
+                   skew = psych::skew(X), kurtosis = psych::kurtosi(X),
+                   p0 = pc[, 1], p1 = pc[, 2], p2 = pc[, 3], p3 = pc[, 4],
+                   row.names = NULL)
+format(desc, digits = 3)
+cat("Items where category 0 is the modal response:", sum(apply(pc, 1, which.max) == 1), "of 21\n")
+cat("Largest share of category 3 on any item: ", round(max(pc[, 4]), 1), "%\n")
+```
+
+# 2. Scale and subscale scores
+
+```{r scores}
+score_desc <- data.frame(
+  scale = names(sums), k = c(21, 7, 7, 7),
+  mean = colMeans(sums), sd = apply(sums, 2, sd), skew = psych::skew(sums),
+  min = apply(sums, 2, min), max = apply(sums, 2, max),
+  floor_pct   = 100 * colMeans(sums == 0),
+  ceiling_pct = 100 * colMeans(sweep(sums, 2, c(63, 21, 21, 21), "==")),
+  row.names = NULL)
+format(score_desc, digits = 3)
+```
+
+# 3. Reliability and item–total statistics
+
+`psych::alpha` gives raw α, the corrected item–total correlation (`r.drop`) and
+α if an item is dropped. The 95 % CI uses Feldt's F-distribution method.
+
+```{r ctt}
+feldt_ci <- function(a, n, k, conf = .95) {
+  g <- (1 - conf) / 2
+  c(lo = 1 - (1 - a) * qf(1 - g, n - 1, (n - 1) * (k - 1)),
+    hi = 1 - (1 - a) * qf(g,     n - 1, (n - 1) * (k - 1)))
+}
+blocks <- c(list(Total = ITEMS), lapply(SCALES, function(ii) paste0("dass", ii)))
+ctt <- lapply(names(blocks), function(nm) {
+  cols <- blocks[[nm]]
+  a  <- psych::alpha(X[cols], warnings = FALSE, check.keys = FALSE)
+  tt <- rowSums(X[cols]); k <- length(cols)
+  ci <- feldt_ci(a$total$raw_alpha, nrow(X), k)
+  list(k = k, n = nrow(X), mean = mean(tt), sd = sd(tt), skew = psych::skew(tt),
+       alpha = a$total$raw_alpha, alpha_std = a$total$std.alpha,
+       alpha_lo = ci[["lo"]], alpha_hi = ci[["hi"]],
+       avg_r = a$total$average_r, sem = sd(tt) * sqrt(1 - a$total$raw_alpha),
+       item = data.frame(item = cols, r_drop = a$item.stats$r.drop,
+                         alpha_if_dropped = a$alpha.drop$raw_alpha))
+})
+names(ctt) <- names(blocks)
+
+data.frame(scale = names(ctt),
+           alpha = sapply(ctt, `[[`, "alpha"), lo = sapply(ctt, `[[`, "alpha_lo"),
+           hi = sapply(ctt, `[[`, "alpha_hi"), alpha_std = sapply(ctt, `[[`, "alpha_std"),
+           avg_r = sapply(ctt, `[[`, "avg_r"), SEM = sapply(ctt, `[[`, "sem"),
+           row.names = NULL) |> format(digits = 4)
+
+```
+
+```{r item-total}
+it <- ctt$Total$item
+it$r_drop_own_subscale <- sapply(it$item, function(i)
+  with(ctt[[SUBSCALE_OF[i]]]$item, r_drop[item == i]))
+format(it, digits = 3)
+cat("Items that would raise total-scale alpha if dropped:",
+    sum(it$alpha_if_dropped > ctt$Total$alpha), "\n")
+for (s in names(SCALES)) cat(sprintf("  %-10s items raising alpha if dropped: %s\n", s,
+  paste(with(ctt[[s]]$item, item[alpha_if_dropped > ctt[[s]]$alpha]), collapse = ", ")))
+```
+
+# 4. Subscale correlations
+
+Observed correlations of the subscale sums, and the same corrected for
+attenuation, $r_{xy}/\sqrt{\alpha_x\alpha_y}$.
+
+```{r subscale-cor}
+R <- cor(sums[, names(SCALES)])
+disatt <- R / sqrt(outer(sapply(ctt[names(SCALES)], `[[`, "alpha"),
+                         sapply(ctt[names(SCALES)], `[[`, "alpha")))
+diag(disatt) <- 1
+round(R, 3); round(disatt, 3)
+```
+
+# 5. Reliability of the dichotomised scores (KR-20)
+
+```{r kr20}
+kr20 <- sapply(list(A = P$bin_A, B = P$bin_B),
+               function(b) psych::alpha(b, warnings = FALSE)$total$raw_alpha)
+round(kr20, 4)
+```
+
+# 6. Numbers for the essay and save
+
+```{r numbers}
+num("MeanTotal", f2(ctt$Total$mean)); num("SDTotal", f2(ctt$Total$sd))
+num("SEMTotal", f2(ctt$Total$sem))
+num("AlphaTotal", dec(ctt$Total$alpha, 3))
+num("AlphaTotalLo", dec(ctt$Total$alpha_lo, 3)); num("AlphaTotalHi", dec(ctt$Total$alpha_hi, 3))
+for (s in names(SCALES)) {
+  num(paste0("Alpha", s), dec(ctt[[s]]$alpha, 3))
+  num(paste0("Floor", s), formatC(100 * mean(sums[[s]] == 0), format = "f", digits = 1))
+}
+num("FloorTotal", formatC(100 * mean(sums$Total == 0), format = "f", digits = 1))
+num("AvgInterItemR", dec(ctt$Total$avg_r))
+num("CITmin", dec(min(it$r_drop))); num("CITmax", dec(max(it$r_drop)))
+num("ItemMeanMin", f2(min(desc$mean))); num("ItemMeanMax", f2(max(desc$mean)))
+num("rSubDA", dec(R["Depression", "Anxiety"])); num("rSubDS", dec(R["Depression", "Stress"]))
+num("rSubAS", dec(R["Anxiety", "Stress"]))
+num("rDisAD", dec(disatt["Depression", "Anxiety"])); num("rDisDS", dec(disatt["Depression", "Stress"]))
+num("rDisASX", dec(disatt["Anxiety", "Stress"]))
+num("AlphaDichA", dec(kr20[["A"]], 3)); num("AlphaDichB", dec(kr20[["B"]], 3))
+
+saveRDS(list(desc = desc, score_desc = score_desc, ctt = ctt, item_total = it,
+             subscale_R = R, disatt = disatt, kr20 = kr20),
+        file.path(RES, "ctt.rds"))
+log_close()
+```

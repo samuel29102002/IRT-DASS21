@@ -1,0 +1,223 @@
+---
+title: "Step 6 — Reliability, dimensionality and the comparison of omega estimates"
+subtitle: "DASS-21 psychometric analysis (IRT final essay, SoSe 2026)"
+date: "`r format(Sys.time(), '%Y-%m-%d %H:%M')`"
+output:
+  html_document:
+    toc: true
+    keep_md: true
+---
+
+```{r opts, include = FALSE}
+knitr::opts_chunk$set(comment = "", message = FALSE, warning = TRUE)
+```
+
+
+
+```{r setup, include = FALSE}
+setup_file <- c("R/00_setup.R", "../R/00_setup.R")
+source(setup_file[file.exists(setup_file)][1])
+knitr::opts_knit$set(root.dir = PROJ)
+```
+
+```{r load}
+log_open("06")
+P   <- readRDS(file.path(RES, "prepared.rds"))
+CFA <- readRDS(file.path(RES, "cfa.rds"))
+CT  <- readRDS(file.path(RES, "ctt.rds"))
+Lt  <- CFA$loadings
+L1  <- Lt$M1; L2 <- Lt$M2; Lg <- Lt$M4_general; Ls <- Lt$M4_specific
+blk <- lapply(SCALES, function(ii) match(paste0("dass", ii), ITEMS))
+tau <- lavaan::lavInspect(CFA$fits$M1, "est")$tau
+TAU <- lapply(ITEMS, function(i) tau[paste0(i, "|t", 1:3), 1])     # thresholds per item
+```
+
+All coefficients are computed **by hand** from the standardised loadings with the
+formulas of lecture 8 (slides 22–42); package functions are used only as
+cross-checks in section 5. (`semTools::compRelSEM` fails on the bifactor model in
+the installed version — see Step 0 — so it is not relied on.)
+
+# 1. Linear (latent-response metric) coefficients
+
+```{r linear}
+omega_lin <- function(l) sum(l)^2 / (sum(l)^2 + sum(1 - l^2))
+ave       <- function(l) mean(l^2)
+
+## unidimensional model
+om_uni  <- omega_lin(L1); ave_uni <- ave(L1)
+
+## correlated-traits model, per subscale
+om_sub  <- sapply(blk, function(b) omega_lin(L2[b]))
+ave_sub <- sapply(blk, function(b) ave(L2[b]))
+
+## bifactor model
+u    <- 1 - (Lg^2 + Ls^2)
+sg2  <- sum(Lg)^2
+ss2  <- sum(sapply(blk, function(b) sum(Ls[b])^2))
+omegaT <- (sg2 + ss2) / (sg2 + ss2 + sum(u))
+omegaH <- sg2 / (sg2 + ss2 + sum(u))
+ECV    <- sum(Lg^2) / (sum(Lg^2) + sum(Ls^2))
+PUC    <- (choose(21, 2) - sum(sapply(blk, function(b) choose(length(b), 2)))) / choose(21, 2)
+IECV   <- Lg^2 / (Lg^2 + Ls^2)
+sub_bi <- t(sapply(blk, function(b) {
+  den <- sum(Lg[b])^2 + sum(Ls[b])^2 + sum(u[b])
+  c(omega = (sum(Lg[b])^2 + sum(Ls[b])^2) / den,
+    omegaS = sum(Ls[b])^2 / den,
+    omegaHS_share = sum(Ls[b])^2 / (sum(Lg[b])^2 + sum(Ls[b])^2),
+    ECV_S = sum(Ls[b]^2) / (sum(Lg[b]^2) + sum(Ls[b]^2)))
+}))
+H_index <- function(l) 1 / (1 + 1 / sum(l^2 / (1 - l^2)))   # construct replicability
+H <- c(G = H_index(Lg), sapply(blk, function(b) H_index(Ls[b])))
+
+## factor determinacy: sqrt(diag(Phi L' Sigma^-1 L Phi)), model-implied Sigma
+fd <- function(fit) {
+  e <- lavaan::lavInspect(fit, "est"); S <- lavaan::lavInspect(fit, "implied")$cov
+  L <- e$lambda; Phi <- e$psi
+  sqrt(diag(Phi %*% t(L) %*% solve(S) %*% L %*% Phi))
+}
+FD <- lapply(CFA$fits[c("M1", "M2", "M4")], fd)
+
+round(c(omega_unidim = om_uni, AVE_unidim = ave_uni, omegaT = omegaT, omegaH = omegaH,
+        ratio = omegaH / omegaT, ECV = ECV, PUC = PUC), 4)
+round(rbind(omega_congeneric = om_sub, AVE = ave_sub), 4)
+round(sub_bi, 4); round(H, 4); lapply(FD, round, 4)
+cat("Items with IECV > .85 (essentially unidimensional items):",
+    paste(which(IECV > .85), collapse = ", "), "\n")
+```
+
+# 2. Green & Yang (2009) non-linear coefficients (observed-score metric)
+
+For ordinal items the linear coefficients describe the reliability of a sum of the
+*latent responses* Y\*. Green & Yang re-express reliability for the sum of the
+*observed* 0–3 scores using the thresholds and bivariate-normal probabilities
+(lecture 8, slides 46–49):
+$\sigma_{ij}=\sum_{c}\sum_{c'}[\Phi_2(-\tau_{ic},-\tau_{jc'};\rho_{ij})-\Phi(-\tau_{ic})\Phi(-\tau_{jc'})]$.
+The numerator uses the correlations reproduced by the factor(s) of interest
+(diagonal = their communality), the denominator the total model-implied latent
+correlations (diagonal = 1).
+
+```{r gy}
+phi2 <- function(h, k, r) {
+  if (r > 1 - 1e-10) return(pnorm(pmin(h, k)))
+  pbivnorm::pbivnorm(h, k, rho = r)
+}
+cov_obs <- function(ti, tj, r) {
+  g <- expand.grid(a = -ti, b = -tj)
+  sum(phi2(g$a, g$b, r) - pnorm(g$a) * pnorm(g$b))
+}
+green_yang <- function(items, Rc, Rt) {
+  num <- den <- 0
+  for (i in items) for (j in items) {
+    num <- num + cov_obs(TAU[[i]], TAU[[j]], Rc[i, j])
+    den <- den + cov_obs(TAU[[i]], TAU[[j]], Rt[i, j])
+  }
+  num / den
+}
+with_diag <- function(M, d) { diag(M) <- d; M }
+
+## unidimensional
+Rc1 <- with_diag(outer(L1, L1), L1^2); Rt1 <- with_diag(Rc1, 1)
+gy_uni <- green_yang(1:21, Rc1, Rt1)
+
+## bifactor: general factor only / all factors
+LB  <- cbind(Lg, sapply(blk, function(b) replace(numeric(21), b, Ls[b])))
+Rtot <- with_diag(LB %*% t(LB), 1)
+gy_H <- green_yang(1:21, with_diag(outer(Lg, Lg), Lg^2), Rtot)
+gy_T <- green_yang(1:21, with_diag(LB %*% t(LB), rowSums(LB^2)), Rtot)
+
+## subscales: congeneric (M2) and unique part (bifactor omega_S)
+gy_sub <- sapply(blk, function(b) {
+  l <- numeric(21); l[b] <- L2[b]
+  green_yang(b, with_diag(outer(l, l), l^2), with_diag(outer(l, l), 1))
+})
+gy_S <- sapply(seq_along(blk), function(k) {
+  b <- blk[[k]]; s <- LB[, k + 1]
+  green_yang(b, with_diag(outer(s, s), s^2), Rtot)
+})
+names(gy_S) <- names(blk)
+round(c(GY_unidim = gy_uni, GY_omegaH = gy_H, GY_omegaT = gy_T), 4)
+round(rbind(GY_congeneric = gy_sub, GY_omegaS = gy_S), 4)
+
+```
+
+# 3. Other reliability estimates for the comparison
+
+```{r others}
+Rpoly <- CFA$polychoric
+rbar_poly <- mean(Rpoly[upper.tri(Rpoly)])
+ordinal_alpha <- 21 * rbar_poly / (1 + 20 * rbar_poly)        # alpha on polychorics
+om_efa <- tryCatch(psych::omega(Rpoly, nfactors = 3, n.obs = nrow(P$items),
+                                plot = FALSE, flip = FALSE), error = function(e) NULL)
+if (!is.null(om_efa)) print(round(c(EFA_SL_omegaH = om_efa$omega_h,
+                                    EFA_SL_omegaT = om_efa$omega.tot), 4))
+cat("Ordinal alpha (alpha on the polychoric matrix):", round(ordinal_alpha, 4), "\n")
+```
+
+# 4. Comparison table
+
+```{r compare}
+cmp <- data.frame(
+  estimate = c("Cronbach alpha (raw scores)", "Ordinal alpha (polychoric)",
+               "omega, unidimensional CFA (linear)", "omega, unidimensional CFA (Green-Yang)",
+               "omega_T, bifactor (linear)", "omega_T, bifactor (Green-Yang)",
+               "omega_H, bifactor CFA (linear)", "omega_H, bifactor CFA (Green-Yang)",
+               "omega_H, EFA + Schmid-Leiman", "omega_T, EFA + Schmid-Leiman"),
+  metric = c("observed", "latent", "latent", "observed", "latent", "observed",
+             "latent", "observed", "latent", "latent"),
+  value = c(CT$ctt$Total$alpha, ordinal_alpha, om_uni, gy_uni, omegaT, gy_T, omegaH, gy_H,
+            if (is.null(om_efa)) NA else om_efa$omega_h,
+            if (is.null(om_efa)) NA else om_efa$omega.tot))
+cmp$value <- round(cmp$value, 4); cmp
+sub_cmp <- data.frame(subscale = names(SCALES),
+  alpha = sapply(names(SCALES), function(s) CT$ctt[[s]]$alpha),
+  omega_congeneric = om_sub, omega_congeneric_GY = gy_sub,
+  omega_bifactor = sub_bi[, "omega"], omegaS = sub_bi[, "omegaS"], omegaS_GY = gy_S,
+  FD_specific = FD$M4[-1], H_specific = H[-1], row.names = NULL)
+format(sub_cmp, digits = 3)
+```
+
+# 5. Package cross-checks
+
+```{r packages}
+bi <- tryCatch(BifactorIndicesCalculator::bifactorIndices(CFA$fits$M4), error = function(e) e)
+if (!inherits(bi, "error")) {
+  print(round(bi$ModelLevelIndices, 4)); print(round(bi$FactorLevelIndices, 4))
+  cat("NOTE: for ordinal fits BifactorIndicesCalculator may use the threshold-based\n",
+      "      (observed-metric) omega; compare its Omega/OmegaH with sections 1 and 2.\n")
+} else cat("bifactorIndices failed:", conditionMessage(bi), "\n")
+
+for (m in c("M1", "M2")) for (os in c(FALSE, TRUE)) {
+  r <- tryCatch(semTools::compRelSEM(CFA$fits[[m]], ord.scale = os), error = function(e) conditionMessage(e))
+  cat("compRelSEM", m, "ord.scale =", os, ":"); print(r)
+}
+sl <- tryCatch(psych::omegaFromSem(CFA$fits$M4, plot = FALSE), error = function(e) conditionMessage(e))
+cat("\npsych::omegaFromSem(M4):\n"); print(if (is.character(sl)) sl else sl$omega.efa)
+```
+
+# 6. Numbers for the essay and save
+
+```{r numbers}
+num("OmegaTotalLin", dec(om_uni, 3)); num("OmegaTotalGY", dec(gy_uni, 3))
+num("AVEUnidim", dec(ave_uni, 3))
+num("OmegaT", dec(omegaT, 3)); num("OmegaH", dec(omegaH, 3)); num("OmegaRatio", dec(omegaH / omegaT, 3))
+num("OmegaHGY", dec(gy_H, 3)); num("OmegaTGY", dec(gy_T, 3))
+num("ECV", dec(ECV, 3)); num("PUC", dec(PUC, 2))
+num("FDGeneral", dec(FD$M4[1], 3)); num("HGeneral", dec(H[["G"]], 3))
+num("OrdinalAlpha", dec(ordinal_alpha, 3))
+if (!is.null(om_efa)) { num("OmegaHEFA", dec(om_efa$omega_h, 3)); num("OmegaTEFA", dec(om_efa$omega.tot, 3)) }
+num("GapAlphaOmega", dec(om_uni - CT$ctt$Total$alpha, 3))
+num("GapLinGY", dec(om_uni - gy_uni, 3)); num("GapLinGYH", dec(omegaH - gy_H, 3))
+for (k in seq_along(SCALES)) {
+  s <- names(SCALES)[k]
+  num(paste0("Omega", s), dec(om_sub[[s]], 3)); num(paste0("OmegaGY", s), dec(gy_sub[[s]], 3))
+  num(paste0("OmegaBi", s), dec(sub_bi[s, "omega"], 3))
+  num(paste0("OmegaS", s), dec(sub_bi[s, "omegaS"], 3)); num(paste0("OmegaSGY", s), dec(gy_S[[s]], 3))
+  num(paste0("FD", s), dec(FD$M4[k + 1], 3)); num(paste0("AVE", s), dec(ave_sub[[s]], 3))
+}
+saveRDS(list(omega_uni = om_uni, omega_sub = om_sub, omegaT = omegaT, omegaH = omegaH,
+             ECV = ECV, PUC = PUC, IECV = IECV, sub_bi = sub_bi, H = H, FD = FD,
+             gy = list(uni = gy_uni, H = gy_H, T = gy_T, sub = gy_sub, S = gy_S),
+             ordinal_alpha = ordinal_alpha, om_efa = om_efa, compare = cmp, sub_compare = sub_cmp),
+        file.path(RES, "reliability.rds"))
+log_close()
+```
